@@ -79,7 +79,7 @@ The present experiment serves as a **sanity check** and **visual proof** of robu
 
 ---
 
-## 🧩 Files
+## Files
 
 | File | Description |
 |------|--------------|
@@ -89,6 +89,14 @@ The present experiment serves as a **sanity check** and **visual proof** of robu
 | `summary.csv` | Numeric results summary (errors, coordinates) |
 
 ---
+
+### Visualizations
+
+<p align="center">
+  <img src="./clean.png" alt="Clean scenario" width="400"/>
+  <img src="./corrupted.png" alt="Corrupted scenario" width="400"/>
+</p>
+
 
 ##  Run Locally
 
