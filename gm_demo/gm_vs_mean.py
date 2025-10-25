@@ -46,3 +46,18 @@ plt.title("Clean data (no outliers)")
 plt.legend(); plt.xlabel("x1"); plt.ylabel("x2")
 plt.tight_layout()
 plt.savefig("clean.png", dpi=160)
+
+
+# Scenario 2: With outliers 
+X_out = make_data(n_inliers=300, n_outliers=130, outlier_shift=(25.0, 25.0), inlier_cov=1.0)
+mean_o, gm_o, err_mean_o, err_gm_o = summarize(X_out)
+
+plt.figure(figsize=(6,6))
+plt.scatter(X_out[:,0], X_out[:,1], s=10, alpha=0.5, label="points")
+plt.scatter([0],[0], marker="x", s=100, label="true center")
+plt.scatter([mean_o[0]], [mean_o[1]], marker="o", s=80, label="mean")
+plt.scatter([gm_o[0]], [gm_o[1]], marker="^", s=100, label="geometric median")
+plt.title("Corrupted data (30% outliers far away)")
+plt.legend(); plt.xlabel("x1"); plt.ylabel("x2")
+plt.tight_layout()
+plt.savefig("corrupted.png", dpi=160)
