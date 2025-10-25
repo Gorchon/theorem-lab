@@ -61,3 +61,15 @@ plt.title("Corrupted data (30% outliers far away)")
 plt.legend(); plt.xlabel("x1"); plt.ylabel("x2")
 plt.tight_layout()
 plt.savefig("corrupted.png", dpi=160)
+
+#  Numeric summary 
+summary = pd.DataFrame({
+    "scenario": ["clean", "corrupted (30% outliers)"],
+    "mean (x1,x2)": [tuple(np.round(mean_c,3)), tuple(np.round(mean_o,3))],
+    "gm (x1,x2)": [tuple(np.round(gm_c,3)), tuple(np.round(gm_o,3))],
+    "mean error vs true center": [round(err_mean_c,4), round(err_mean_o,4)],
+    "gm error vs true center": [round(err_gm_c,4), round(err_gm_o,4)],
+})
+print(summary.to_string(index=False))
+summary.to_csv("summary.csv", index=False)
+print("\nSaved plots: clean.png, corrupted.png; table: summary.csv")
