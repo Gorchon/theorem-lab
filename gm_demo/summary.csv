@@ -1,0 +1,3 @@
+scenario,"mean (x1,x2)","gm (x1,x2)",mean error vs true center,gm error vs true center
+clean,"(np.float64(-0.022), np.float64(-0.03))","(np.float64(-0.016), np.float64(0.0))",0.0374,0.0163
+corrupted (30% outliers),"(np.float64(7.533), np.float64(7.567))","(np.float64(0.483), np.float64(0.515))",10.6772,0.7062
