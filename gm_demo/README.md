@@ -4,17 +4,14 @@ This small experiment demonstrates the **robustness of the Geometric Median (GM)
 
 ---
 
-##  Background and Motivation
+## Background and Motivation
 
 In standard optimization or statistics, the **mean** is commonly used as a measure of central tendency.  
 However, the mean is **extremely sensitive to outliers**: even a single corrupted point placed far away can drag the average arbitrarily far from the true center.
 
 To address this, the **Geometric Median (GM)** — also known as the **spatial median** — provides a *robust* alternative.  
-For a set of points \( X = \{x_1, \dots, x_n\} \subset \mathbb{R}^d \), the GM is defined as:
-
-\[
-\mathrm{GM}(X) = \arg\min_{y \in \mathbb{R}^d} \sum_{i=1}^{n} \| x_i - y \|.
-\]
+For a set of points \( X = \{x_1, \dots, x_n\} \subset \mathbb{R}^d \), the GM is defined as  
+\( \mathrm{GM}(X) = \arg\min_{y \in \mathbb{R}^d} \sum_{i=1}^{n} \| x_i - y \| \).
 
 Unlike the mean (which minimizes squared distance), the GM minimizes the **sum of Euclidean distances**, which greatly reduces the influence of large deviations.
 
