@@ -31,3 +31,18 @@ def summarize(X, true_center=np.array([0.0, 0.0])):
     mean_err = float(np.linalg.norm(mean - true_center))
     gm_err = float(np.linalg.norm(gm - true_center))
     return mean, gm, mean_err, gm_err
+
+
+# Scenario 1: Clean 
+X_clean = make_data(n_inliers=300, n_outliers=0, inlier_cov=1.0)
+mean_c, gm_c, err_mean_c, err_gm_c = summarize(X_clean)
+
+plt.figure(figsize=(6,6))
+plt.scatter(X_clean[:,0], X_clean[:,1], s=10, alpha=0.5, label="points")
+plt.scatter([0],[0], marker="x", s=100, label="true center")
+plt.scatter([mean_c[0]], [mean_c[1]], marker="o", s=80, label="mean")
+plt.scatter([gm_c[0]], [gm_c[1]], marker="^", s=100, label="geometric median")
+plt.title("Clean data (no outliers)")
+plt.legend(); plt.xlabel("x1"); plt.ylabel("x2")
+plt.tight_layout()
+plt.savefig("clean.png", dpi=160)
