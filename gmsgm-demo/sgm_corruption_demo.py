@@ -61,3 +61,33 @@ def run_experiment(steps=50, eta=0.1, seed=0):
             w = sgm_step_corrupted(w, eta=eta, corruption_prob=p, noise_scale=3.0)
             traj.append(w.clone())
         all_trajs.append((p, torch.stack(traj)))
+        
+    # ---- Plot ----
+    plt.figure(figsize=(6,6))
+
+    # feasible boundary: w0 + w1 = 1
+    import numpy as np
+    xx = np.linspace(-1.5, 2.0, 200)
+    yy = 1.0 - xx
+    plt.plot(xx, yy, 'k--', linewidth=1.0, label='g(w)=0 boundary')
+
+    # clean SGM
+    plt.plot(traj_clean[:,0], traj_clean[:,1], '-o', label='SGM (no corruption)')
+
+    # corrupted runs
+    for p, traj in all_trajs:
+        plt.plot(traj[:,0], traj[:,1], '-o', label=f'SGM corruption={p}')
+
+    plt.xlabel('w0'); plt.ylabel('w1'); plt.grid(True)
+    plt.axis('equal'); plt.legend()
+    plt.title('SGM under gradient corruption')
+    plt.tight_layout()
+    plt.show()  # will open a window; or save with plt.savefig('sgm_corruption.png', dpi=150)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--eta", type=float, default=0.1)
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_args()
+    run_experiment(steps=args.steps, eta=args.eta, seed=args.seed)
