@@ -21,3 +21,19 @@ def sgm_step(w: torch.Tensor, eta: float = 0.1, eps: float = 0.0) -> torch.Tenso
     else:
         grad = torch.autograd.grad(g(w), w)[0]
     return (w - eta * grad).detach()
+
+# ---- SGM step with gradient corruption (simulate bad workers/noisy grads) ----
+def sgm_step_corrupted(
+    w: torch.Tensor,
+    eta: float = 0.1,
+    eps: float = 0.0,
+    corruption_prob: float = 0.3,
+    noise_scale: float = 3.0,
+) -> torch.Tensor:
+    w = w.clone().detach().requires_grad_(True)
+    # choose regime
+    grad = torch.autograd.grad(f(w), w)[0] if g(w) <= eps else torch.autograd.grad(g(w), w)[0]
+    # corrupt the gradient with some probability
+    if random.random() < corruption_prob:
+        grad = grad + noise_scale * torch.randn_like(grad)
+    return (w - eta * grad).detach()
