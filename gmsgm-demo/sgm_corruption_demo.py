@@ -11,3 +11,13 @@ def f(w: torch.Tensor) -> torch.Tensor:
 
 def g(w: torch.Tensor) -> torch.Tensor:
     return w[0] + w[1] - 1.0
+
+
+# ---- Plain SGM step (no robustness) ----
+def sgm_step(w: torch.Tensor, eta: float = 0.1, eps: float = 0.0) -> torch.Tensor:
+    w = w.clone().detach().requires_grad_(True)
+    if g(w) <= eps:
+        grad = torch.autograd.grad(f(w), w)[0]
+    else:
+        grad = torch.autograd.grad(g(w), w)[0]
+    return (w - eta * grad).detach()
