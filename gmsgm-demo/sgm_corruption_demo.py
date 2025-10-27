@@ -37,3 +37,27 @@ def sgm_step_corrupted(
     if random.random() < corruption_prob:
         grad = grad + noise_scale * torch.randn_like(grad)
     return (w - eta * grad).detach()
+
+def run_experiment(steps=50, eta=0.1, seed=0):
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    # start from an infeasible point to exercise switching
+    w0 = torch.tensor([-0.5, 1.0])
+    traj_clean = [w0.clone()]
+    w = w0.clone()
+    for _ in range(steps):
+        w = sgm_step(w, eta)
+        traj_clean.append(w.clone())
+    traj_clean = torch.stack(traj_clean)
+
+    # compare different corruption levels
+    levels = [0.0, 0.2, 0.4, 0.6]
+    all_trajs = []
+    for p in levels:
+        w = w0.clone()
+        traj = [w.clone()]
+        for _ in range(steps):
+            w = sgm_step_corrupted(w, eta=eta, corruption_prob=p, noise_scale=3.0)
+            traj.append(w.clone())
+        all_trajs.append((p, torch.stack(traj)))
