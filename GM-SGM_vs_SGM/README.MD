@@ -76,7 +76,7 @@ Remains **stable and convergent** despite identical corruption. The geometric me
 
 ---
 
-## 🔍 2D Comparison
+##  2D Comparison
 
 Visual comparison of all three trajectories:
 
