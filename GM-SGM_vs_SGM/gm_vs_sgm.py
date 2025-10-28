@@ -42,25 +42,29 @@ def geometric_median(vectors, eps=1e-6, max_iter=100):
 # 3. Single SGM step
 # ====================================================
 
-def sgm_step(w, eta=0.1, eps=0.0, corruption=False):
+def sgm_step(w, eta=0.1, eps=0.0, corruption=False, corruption_rate=0.4):
+    """Single SGM step with optional gradient corruption."""
     g_val = g_value(w)
     grad = grad_f(w) if g_val <= eps else grad_g()
+
+    # Add corruption to gradients (simulate 40% noisy gradients)
     if corruption:
         noise = 2.0 * torch.randn_like(grad)
-        if np.random.rand() < 0.3:
-            grad = grad + noise * 3.0  # 30% corrupted spikes
+        if np.random.rand() < corruption_rate:
+            grad = grad + noise * 3.0
     return w - eta * grad
 
 # ====================================================
 # 4. Single GM-SGM step
 # ====================================================
 
-def gm_sgm_step(w, eta=0.1, eps=0.0, corruption=True, batch_size=10):
+def gm_sgm_step(w, eta=0.1, eps=0.0, corruption=True, batch_size=10, corruption_rate=0.4):
+    """Single GM-SGM step with geometric median aggregation."""
     grads = []
     for _ in range(batch_size):
         g_val = g_value(w)
         grad = grad_f(w) if g_val <= eps else grad_g()
-        if corruption and np.random.rand() < 0.3:
+        if corruption and np.random.rand() < corruption_rate:
             noise = 2.0 * torch.randn_like(grad)
             grad = grad + noise * 3.0
         grads.append(grad)
@@ -71,14 +75,14 @@ def gm_sgm_step(w, eta=0.1, eps=0.0, corruption=True, batch_size=10):
 # 5. Run a method
 # ====================================================
 
-def run_method(method="sgm", clean=True, steps=40, eta=0.15):
+def run_method(method="sgm", clean=True, steps=40, eta=0.15, corruption_rate=0.4):
     w = torch.tensor([-2.0, 3.0])
     traj, losses, gvals = [w.clone()], [f(w[0], w[1])], [g_value(w)]
     for _ in range(steps):
         if method == "gm-sgm":
-            w = gm_sgm_step(w, eta=eta, corruption=(not clean))
+            w = gm_sgm_step(w, eta=eta, corruption=(not clean), corruption_rate=corruption_rate)
         else:
-            w = sgm_step(w, eta=eta, corruption=(not clean))
+            w = sgm_step(w, eta=eta, corruption=(not clean), corruption_rate=corruption_rate)
         traj.append(w.clone())
         losses.append(f(w[0], w[1]))
         gvals.append(g_value(w))
@@ -114,8 +118,8 @@ Z = f(W0, W1)
 def plot_3d(traj, title, filename, color, cmap):
     fig = plt.figure(figsize=(8,6))
     ax = fig.add_subplot(111, projection='3d')
-    ax.plot_surface(W0, W1, Z + 0.5*np.random.randn(*Z.shape)*0.3, cmap=cmap, alpha=0.7)
-    ax.plot(traj[:,0], traj[:,1], f(traj[:,0], traj[:,1]), '-o', color=color)
+    ax.plot_surface(W0, W1, Z + 0.3*np.random.randn(*Z.shape), cmap=cmap, alpha=0.7)
+    ax.plot(traj[:,0], traj[:,1], f(traj[:,0], traj[:,1]), '-o', color=color, linewidth=2)
     ax.scatter(1, 2, f(1,2), c='black', s=60, marker='*', label='True Minimum')
     ax.set_xlabel('w₀'); ax.set_ylabel('w₁'); ax.set_zlabel('f(w)')
     ax.set_title(title)
@@ -132,14 +136,16 @@ plot_3d(traj_gm.numpy(), "GM-SGM — Robust Convergence under Corruption", "gm_s
 # 10. 2D Trajectory Plot (Comparison)
 # ====================================================
 
-plt.figure(figsize=(7,5))
-plt.plot(traj_clean[:,0], traj_clean[:,1], '-o', label='Clean SGM', color='blue')
-plt.plot(traj_corrupted[:,0], traj_corrupted[:,1], '-o', label='Corrupted SGM', color='red', alpha=0.7)
-plt.plot(traj_gm[:,0], traj_gm[:,1], '-o', label='GM-SGM (Robust)', color='green', alpha=0.9)
+plt.figure(figsize=(8,6))
+plt.plot(traj_clean[:,0], traj_clean[:,1], '-o', label='Clean SGM', color='blue', linewidth=2, markersize=5)
+plt.plot(traj_corrupted[:,0], traj_corrupted[:,1], '-o', label='Corrupted SGM', color='red', alpha=0.7, linewidth=2, markersize=5)
+plt.plot(traj_gm[:,0], traj_gm[:,1], '-o', label='GM-SGM (Robust)', color='green', alpha=0.9, linewidth=2, markersize=5)
 plt.scatter(1, 2, marker='*', color='black', s=150, label='True Minimum (1,2)')
-plt.xlabel("w₀"); plt.ylabel("w₁")
+plt.xlabel("w₀")
+plt.ylabel("w₁")
 plt.title("2D Trajectories — Clean SGM vs Corrupted SGM vs GM-SGM")
-plt.legend(); plt.grid(True)
+plt.legend()
+plt.grid(True)
 plt.tight_layout()
 plt.savefig("results/sgm_gmsgm_2d_comparison.png", dpi=300)
 plt.close()
