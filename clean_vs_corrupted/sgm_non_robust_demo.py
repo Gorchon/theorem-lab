@@ -86,7 +86,7 @@ ax.plot_surface(W0, W1, Z, cmap='viridis', alpha=0.7)
 traj = traj_clean.numpy()
 ax.plot(traj[:,0], traj[:,1], f(traj[:,0], traj[:,1]), '-o', color='blue', label='Clean SGM trajectory')
 ax.set_xlabel('w₀'); ax.set_ylabel('w₁'); ax.set_zlabel('f(w)')
-ax.set_title('✅ SGM on Clean Data — Smooth Convergence to Minimum')
+ax.set_title(' SGM on Clean Data — Smooth Convergence to Minimum')
 ax.legend()
 plt.tight_layout()
 plt.savefig("results/sgm_clean_3d.png", dpi=300)
@@ -162,7 +162,7 @@ df.to_csv("results/sgm_trajectories.csv", index=False)
 # 9. Summary
 # ====================================================
 
-print("✅ Done. Results saved in 'results/' folder:")
+print(" Done. Results saved in 'results/' folder:")
 print(" - sgm_clean_3d.png")
 print(" - sgm_corrupted_3d.png")
 print(" - sgm_2d_trajectories.png")
