@@ -138,7 +138,6 @@ def plot_3d(traj, title, filename, color, cmap):
     fig = plt.figure(figsize=(8,6))
     ax = fig.add_subplot(111, projection='3d')
     ax.plot_surface(W0, W1, Z, cmap=cmap, alpha=0.8, rstride=1, cstride=1, edgecolor='none')
-
     ax.plot(traj[:,0], traj[:,1], f(traj[:,0], traj[:,1]), '-o', color=color, linewidth=2)
     ax.scatter(1, 2, f(1,2), c='black', s=60, marker='*', label='True Minimum')
     ax.set_xlabel('w₀'); ax.set_ylabel('w₁'); ax.set_zlabel('f(w)')
