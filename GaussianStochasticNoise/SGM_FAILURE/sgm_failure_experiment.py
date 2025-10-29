@@ -145,9 +145,7 @@ for c in corruption_levels:
 
 print(" Saved 3D plots for 0%, 10%, 20%, 50% corruption levels.")
 
-# ==========================================================
-# SUMMARY
-# ==========================================================
+
 print("\n Experiment Summary:")
 print(df.to_string(index=False))
 print("\n All results saved in ./results/")
