@@ -5,9 +5,9 @@ import pandas as pd
 from pathlib import Path
 from mpl_toolkits.mplot3d import Axes3D
 
-# ====================================================
+
 # 1. Setup: Objective and Constraint
-# ====================================================
+
 
 def f(w0, w1):
     """Convex quadratic objective."""
@@ -22,9 +22,9 @@ def g_value(w):
 def grad_g():
     return torch.tensor([1.0, 1.0])
 
-# ====================================================
+
 # 2. Helper: Geometric Median (Weiszfeld)
-# ====================================================
+
 
 def geometric_median(vectors, eps=1e-6, max_iter=100):
     """Weiszfeld's algorithm for geometric median."""
@@ -39,11 +39,11 @@ def geometric_median(vectors, eps=1e-6, max_iter=100):
         guess = new_guess
     return guess
 
-# ====================================================
-# 3. Gross Corruption Model
-# ====================================================
 
-def gross_corruption(grad, psi=0.4, magnitude=8.0):
+# 3. Gross Corruption Model
+
+
+def gross_corruption(grad, psi=0.9, magnitude=8.0):
     """
     Apply the Gross Corruption Model (GCM).
     With probability psi, replace the true gradient with an arbitrary (corrupted) vector.
@@ -55,9 +55,9 @@ def gross_corruption(grad, psi=0.4, magnitude=8.0):
         grad = magnitude * corrupt_direction
     return grad
 
-# ====================================================
+
 # 4. Single SGM step
-# ====================================================
+
 
 def sgm_step(w, eta=0.1, eps=0.0, corruption=False, psi=0.4, magnitude=8.0):
     """Single SGM step with optional Gross Corruption."""
@@ -69,9 +69,9 @@ def sgm_step(w, eta=0.1, eps=0.0, corruption=False, psi=0.4, magnitude=8.0):
 
     return w - eta * grad
 
-# ====================================================
+
 # 5. Single GM-SGM step
-# ====================================================
+
 
 def gm_sgm_step(w, eta=0.1, eps=0.0, corruption=True, batch_size=10, psi=0.4, magnitude=8.0):
     """Single GM-SGM step with geometric median aggregation under Gross Corruption."""
@@ -85,9 +85,8 @@ def gm_sgm_step(w, eta=0.1, eps=0.0, corruption=True, batch_size=10, psi=0.4, ma
     gm_grad = geometric_median(grads)
     return w - eta * gm_grad
 
-# ====================================================
 # 6. Run a method
-# ====================================================
+
 
 def run_method(method="sgm", clean=True, steps=40, eta=0.15, psi=0.4, magnitude=8.0):
     """Run clean or corrupted method with chosen aggregation."""
@@ -104,9 +103,9 @@ def run_method(method="sgm", clean=True, steps=40, eta=0.15, psi=0.4, magnitude=
         gvals.append(g_value(w))
     return torch.stack(traj), np.array(losses), np.array(gvals)
 
-# ====================================================
+
 # 7. Run all three cases
-# ====================================================
+
 
 psi = 0.4          # fraction of corrupted gradients
 magnitude = 8.0    # corruption strength
@@ -115,9 +114,9 @@ traj_clean, loss_clean, g_clean = run_method("sgm", clean=True)
 traj_corrupted, loss_corrupted, g_corrupted = run_method("sgm", clean=False, psi=psi, magnitude=magnitude)
 traj_gm, loss_gm, g_gm = run_method("gm-sgm", clean=False, psi=psi, magnitude=magnitude)
 
-# ====================================================
+
 # 8. Create folder
-# ====================================================
+
 
 Path("results").mkdir(exist_ok=True)
 
