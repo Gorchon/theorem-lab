@@ -131,9 +131,7 @@ plt.tight_layout()
 plt.savefig("results/sgm_gcm_2d_trajectories.png", dpi=300)
 plt.close()
 
-# ====================================================
-# 9. Loss evolution plots
-# ====================================================
+
 
 plt.figure(figsize=(7,5))
 plt.plot(loss_clean, '-o', color='blue', label='Clean loss f(w)')
@@ -145,9 +143,6 @@ plt.tight_layout()
 plt.savefig("results/sgm_gcm_loss_evolution.png", dpi=300)
 plt.close()
 
-# ====================================================
-# 10. Save CSV with trajectories
-# ====================================================
 
 data_clean = pd.DataFrame({
     "step": np.arange(len(traj_clean)),
@@ -170,9 +165,6 @@ data_corrupted = pd.DataFrame({
 df = pd.concat([data_clean, data_corrupted], ignore_index=True)
 df.to_csv("results/sgm_gross_corruption_trajectories.csv", index=False)
 
-# ====================================================
-# 11. Summary
-# ====================================================
 
 print("Done. Results saved in 'results/' folder:")
 print(" - sgm_clean_3d.png")
