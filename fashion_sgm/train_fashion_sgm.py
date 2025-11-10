@@ -30,7 +30,7 @@ device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f" Using device: {device}")
 
 # ===========================
-# 🧠 3️⃣ Definir modelo simple
+# Definir modelo simple
 # ===========================
 model = nn.Sequential(
     nn.Flatten(),
