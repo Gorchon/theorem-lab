@@ -11,13 +11,12 @@ import matplotlib.pyplot as plt
 os.makedirs("results", exist_ok=True)
 
 # ===========================
-# ⚙️ 1️⃣ Cargar Fashion-MNIST
+#  Cargar Fashion-MNIST
 # ===========================
 transform = transforms.Compose([transforms.ToTensor()])
 train = datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
 train_loader = torch.utils.data.DataLoader(train, batch_size=256, shuffle=True)
 
-# Etiquetas (para referencia)
 classes = [
     "T-shirt/top", "Trouser", "Pullover", "Dress", "Coat",
     "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"
@@ -36,7 +35,7 @@ model = nn.Sequential(
     nn.Flatten(),
     nn.Linear(28*28, 128),
     nn.ReLU(),
-    nn.Linear(128, 10)
+    nn.Linear(128, 10)  
 ).to(device)
 
 criterion = nn.CrossEntropyLoss(reduction='none')
@@ -47,7 +46,8 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 # ===========================
 target_class = 7  # Sneaker
 epsilon = {i: 0.3 for i in range(10)}  # κ_i tolerancia por clase
-epochs = 5
+epochs = 20
+lambda_penalty = 2  # peso de penalización
 
 # Para registrar las pérdidas
 loss_target_hist = []
@@ -78,15 +78,27 @@ for epoch in range(epochs):
                 per_class_loss.append(torch.tensor(0.0, device=device))
         per_class_loss = torch.stack(per_class_loss)
 
-        # Objetivo: minimizar pérdida de la clase objetivo
+        # Objetivo principal: minimizar pérdida de Sneaker
         obj = per_class_loss[target_class]
 
-        # Restricciones: penalizar violaciones κ_i (sin modificar tensor)
-        penalties = torch.relu(per_class_loss - torch.tensor(list(epsilon.values()), device=device))
-        penalty = penalties[torch.arange(10, device=device) != target_class].mean()
+        # ===============================
+        # 🔹 Nueva forma de restricción (max_i g_i)
+        # ===============================
+        # g_i = Loss_i - κ_i
+        violations = per_class_loss - torch.tensor(list(epsilon.values()), device=device)
+        violations[target_class] = 0.0  # excluir clase objetivo
 
-        # PPALA-style combinación
-        total_loss = obj + 0.6 * penalty
+        # g(w) = max_i g_i(w)
+        g_value = torch.max(violations)  # la peor violación entre clases
+
+        # Penalización (solo si hay violación)
+        penalty = torch.relu(g_value)
+
+        # ===============================
+        # 🔹 Pérdida total (SGM-like combinación)
+        # ===============================
+        total_loss = obj + lambda_penalty * penalty
+
         total_loss.backward()
         optimizer.step()
 
@@ -102,9 +114,9 @@ for epoch in range(epochs):
     print(f"Epoch {epoch+1} | Target(Sneaker) Loss={loss_target_hist[-1]:.3f} | Penalty={penalty_hist[-1]:.3f}")
 
 # ===========================
-#  6️ Guardar resultados
+#  Guardar resultados
 # ===========================
-torch.save(model.state_dict(), "results/fashion_sgm_model.pth")
+torch.save(model.state_dict(), "results/fashion_sgm_model_max.pth")
 torch.save({
     "loss_target_hist": loss_target_hist,
     "penalty_hist": penalty_hist,
@@ -112,30 +124,29 @@ torch.save({
 }, "results/training_logs.pt")
 
 # ===========================
-#  7️ Generar y guardar gráficas
+#  Graficar
 # ===========================
 per_class_hist = torch.stack(per_class_hist).numpy()
 
-# Figura 1 – Progreso de entrenamiento
 plt.figure(figsize=(10,5))
 plt.plot(loss_target_hist, label='Target Class (Sneaker) Loss')
-plt.plot(penalty_hist, label='Penalty (Constraint Violation)')
-plt.title("Training Progress – SGM-style with Class Constraints")
+plt.plot(penalty_hist, label='Penalty (Max Constraint Violation)')
+plt.title("Training Progress – Max Constraint (SGM-style)")
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.legend()
-plt.savefig("results/training_progress.png")
+plt.savefig("results/training_progress_max.png")
 plt.close()
 
-# Figura 2 – Pérdida promedio por clase
 plt.figure(figsize=(12,6))
 for i in range(10):
     plt.plot(per_class_hist[:, i], label=classes[i])
-plt.title("Average Loss per Class Over Epochs")
+plt.axhline(0.3, color='red', linestyle='--', label='κ_i limit (0.3)')
+plt.title("Average Loss per Class – Max Constraint Version")
 plt.xlabel("Epoch")
 plt.ylabel("Average Loss")
 plt.legend()
-plt.savefig("results/per_class_losses.png")
+plt.savefig("results/per_class_losses_max.png")
 plt.close()
 
-print(" Entrenamiento completado. Resultados guardados en ./results/")
+print(" Entrenamiento completado con max-constraint. Resultados en ./results/")
