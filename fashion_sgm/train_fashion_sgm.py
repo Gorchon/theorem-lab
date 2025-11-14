@@ -5,7 +5,7 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 
-# ===========================
+# ============================
 #  Crear carpeta de resultados
 # ===========================
 os.makedirs("results", exist_ok=True)
@@ -33,10 +33,13 @@ print(f" Using device: {device}")
 # ===========================
 model = nn.Sequential(
     nn.Flatten(),
-    nn.Linear(28*28, 128),
+    nn.Linear(28 * 28, 256),   # wider first layer
     nn.ReLU(),
-    nn.Linear(128, 10)  
+    nn.Linear(256, 128),       # another hidden layer
+    nn.ReLU(),
+    nn.Linear(128, 10)
 ).to(device)
+
 
 criterion = nn.CrossEntropyLoss(reduction='none')
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
@@ -46,8 +49,8 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 # ===========================
 target_class = 7  # Sneaker
 epsilon = {i: 0.3 for i in range(10)}  # κ_i tolerancia por clase
-epochs = 20
-lambda_penalty = 2  # peso de penalización
+epochs = 140
+lambda_penalty = 4  # peso de penalización
 
 # Para registrar las pérdidas
 loss_target_hist = []
