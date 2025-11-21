@@ -43,7 +43,7 @@ def geometric_median(vectors, eps=1e-6, max_iter=100):
 # 3. Gross Corruption Model
 
 
-def gross_corruption(grad, psi=0.9, magnitude=8.0):
+def gross_corruption(grad, psi=0.3, magnitude=8.0):
     """
     Apply the Gross Corruption Model (GCM).
     With probability psi, replace the true gradient with an arbitrary (corrupted) vector.
