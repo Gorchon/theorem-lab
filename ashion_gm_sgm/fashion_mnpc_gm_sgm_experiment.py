@@ -212,8 +212,6 @@ def train(mode="sgm_clean"):
                     worker_corr_frac=WORKER_CORR_FRAC,
                     scale=WORKER_CORR_SCALE,
                 )
-            # 'sgm_clean' uses raw gradients
-
             optimizer.step()
 
             per_class_loss_epoch += per_class_loss.detach()
