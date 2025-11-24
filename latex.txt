@@ -1,0 +1,360 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\geometry{margin=1in}
+
+\title{\textbf{Geometric Median Switching Gradient Method (GM-SGM):\\
+Robust Optimization under Gradient Corruption}}
+\author{José María Soto Valenzuela\\
+\small Purdue University -- Tecnológico de Monterrey Exchange Program}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% ------------------------------------------------------------
+\begin{abstract}
+The Switching Gradient Method (SGM) provides a principled approach for solving constrained optimization problems through dynamic switching between the gradients of the objective and the constraint. While effective in deterministic settings, SGM is highly sensitive to corrupted stochastic gradients due to its reliance on mean aggregation. This paper introduces the \textbf{Geometric Median Switching Gradient Method (GM-SGM)}, which integrates geometric median aggregation into the switching framework to achieve robustness against adversarial and heavy-tailed gradient corruption. The proposed method preserves the structural properties of SGM while offering substantially improved stability. Experiments on convex quadratic problems and multi-class constrained neural training demonstrate that GM-SGM maintains feasibility and stable convergence even under severe gradient corruption, highlighting its potential for reliable optimization in modern large-scale and distributed environments.
+\end{abstract}
+
+% ------------------------------------------------------------
+\section{Introduction}
+
+Robust optimization is essential for modern machine learning systems, particularly in distributed, federated, and adversarial environments where gradient information may be noisy or maliciously corrupted. Standard stochastic gradient descent (SGD) relies on mean aggregation, which has a breakdown point of zero and therefore behaves unpredictably in the presence of outliers or corrupted samples. This fragility motivates the development of optimization methods capable of maintaining stability under adversarial perturbations.
+
+The \textbf{Switching Gradient Method (SGM)}~\cite{hashemi2023switching} provides a compelling framework for constrained optimization by dynamically alternating between objective and constraint gradients. Its continuous-time formulation induces a skew-symmetric flow that promotes last-iterate convergence and stability. However, its discrete-time implementation inherits vulnerability to gradient corruption due to its reliance on mean-based stochastic gradient estimates.
+
+In parallel, robust statistics has shown that the \textbf{geometric median} provides a powerful alternative to the mean for aggregating high-dimensional data under adversarial or heavy-tailed noise. With a breakdown point of $1/2$, the geometric median tolerates up to 50\% arbitrary corruption in the samples.
+
+This paper combines these two ideas by introducing the \textbf{Geometric Median Switching Gradient Method (GM-SGM)}, which replaces mean aggregation in SGM with geometric median aggregation. This integrates robustness directly into the switching mechanism while retaining the theoretical structure of SGM.
+
+\paragraph{Contributions.}
+\begin{itemize}
+    \item A robust extension of SGM based on geometric median aggregation for both objective and constraint gradients.
+    \item A median-based feasibility test that prevents corrupted constraint values from triggering incorrect switching decisions.
+    \item A smooth switching mechanism that improves stability near constraint boundaries.
+    \item Extensive empirical validation on convex and non-convex constrained problems, demonstrating significant robustness under adversarial gradient corruption.
+\end{itemize}
+
+% ------------------------------------------------------------
+\section{Background and Motivation}
+
+\subsection{Switching Gradient Method (SGM)}
+
+SGM solves constrained problems of the form
+\begin{equation}
+    \min_{w \in \mathbb{R}^d} f(w) 
+    \qquad \text{s.t.} \qquad g(w) \le \epsilon,
+\end{equation}
+by alternating between $\nabla f$ and $\nabla g$ according to feasibility:
+\[
+\dot{w}(t) = 
+\begin{cases}
+-\nabla f(w(t)), & g(w(t)) \le \epsilon, \\[3pt]
+-\nabla g(w(t)), & g(w(t)) > \epsilon.
+\end{cases}
+\]
+
+The continuous-time formulation induces a skew-symmetric structure that stabilizes last-iterate behavior.  
+However, its discretization with stochastic gradients is highly sensitive to corruption because it uses the \emph{mean} of mini-batch gradients.
+
+\subsection{Geometric Median Aggregation}
+
+Given a set of vectors $\{x_i\}_{i=1}^b$, the geometric median is defined as
+\[
+\mathrm{GM}(\{x_i\}) = \arg\min_{y \in \mathbb{R}^d} \sum_{i=1}^b \|x_i - y\|.
+\]
+With a breakdown point of $1/2$, this estimator is robust to a large fraction of adversarial inputs.  
+This motivates its use in place of the mean within SGM.
+
+% ------------------------------------------------------------
+\section{Proposed Method: Geometric Median Switching Gradient Method (GM-SGM)}
+
+\subsection{Robust Aggregation of Objective and Constraint Gradients}
+
+At iteration $t$, a mini-batch $\mathcal{D}_t$ yields per-sample gradients
+\[
+\nabla f_i(w_t), \qquad \nabla g_i(w_t), \qquad i \in \mathcal{D}_t.
+\]
+GM-SGM aggregates them as:
+\[
+\widehat{\nabla f}(w_t) = \mathrm{GM}(\{\nabla f_i(w_t)\}), \qquad
+\widehat{\nabla g}(w_t) = \mathrm{GM}(\{\nabla g_i(w_t)\}).
+\]
+
+\subsection{Robust Feasibility Test}
+
+To protect the switching decision under corruption, the constraint evaluations are aggregated via the median:
+\[
+\widehat g_t = \operatorname{median}(\{g_i(w_t)\}).
+\]
+
+\subsection{Switching Dynamics}
+
+Hard switching:
+\[
+u_t =
+\begin{cases}
+\widehat{\nabla f}(w_t), & \widehat g_t \le \epsilon, \\[4pt]
+\widehat{\nabla g}(w_t), & \widehat g_t > \epsilon.
+\end{cases}
+\]
+
+Soft switching:
+\[
+p_t = \min\{1, [1 + \beta(\widehat g_t - \epsilon)]_+\},
+\qquad
+u_t = p_t \widehat{\nabla g}(w_t) + (1 - p_t)\widehat{\nabla f}(w_t).
+\]
+
+Final update:
+\[
+w_{t+1} = w_t - \eta u_t.
+\]
+
+\subsection{Algorithm}
+
+\begin{algorithm}[H]
+\caption{Geometric Median Switching Gradient Method (GM-SGM)}
+\label{alg:gmsgm}
+\begin{algorithmic}[1]
+\Require Step size $\eta$, threshold $\epsilon$, smoothness $\beta$
+\State Initialize $w_0$
+\For{$t = 0, 1, \dots, T-1$}
+    \State Sample mini-batch $\mathcal{D}_t$
+    \State Compute per-sample gradients $\{\nabla f_i(w_t)\}$, $\{\nabla g_i(w_t)\}$
+    \State Aggregate via geometric median: $\widehat{\nabla f}(w_t)$, $\widehat{\nabla g}(w_t)$
+    \State Compute robust feasibility: $\widehat g_t$
+    \State Compute switching weight $p_t$
+    \State $u_t = p_t \widehat{\nabla g}(w_t) + (1 - p_t)\widehat{\nabla f}(w_t)$
+    \State Update: $w_{t+1} = w_t - \eta u_t$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+% ------------------------------------------------------------
+% ------------------------------------------------------------
+\section{Controlled Validation on Convex Quadratics}
+
+To isolate the effect of gradient corruption on switching dynamics, we evaluate SGM and GM-SGM on the convex quadratic objective
+\[
+f(w) = (w_0 - 1)^2 + (w_1 - 2)^2,
+\qquad
+g(w) = w_0 + w_1 - 2.
+\]
+The solution is attained at the point $(1, 2)$, with constraint boundary $g(w)=0$.  
+All experiments include $40\%$ adversarial gradient corruption generated via a gross corruption model.
+
+This setting provides a controlled environment where the geometry of the objective and constraint is simple and well understood, making it possible to directly visualize the influence of switching rules and robust aggregation on optimization trajectories.
+
+% ------------------------------------------------------------
+\subsection{Trajectory Comparisons}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.32\textwidth}
+\includegraphics[width=\textwidth]{results/sgm_clean_3d.png}
+\caption{Clean SGM}
+\end{subfigure}
+\begin{subfigure}{0.32\textwidth}
+\includegraphics[width=\textwidth]{results/sgm_gross_corruption_3d.png}
+\caption{SGM under corruption}
+\end{subfigure}
+\begin{subfigure}{0.32\textwidth}
+\includegraphics[width=\textwidth]{results/gm_sgm_gross_corruption_3d.png}
+\caption{GM-SGM under corruption}
+\end{subfigure}
+\caption{\textbf{3D optimization trajectories on the quadratic surface.}  
+Clean SGM converges smoothly to the optimum, while SGM under corruption diverges due to corrupted gradient directions.  
+GM-SGM remains stable despite identical corruption levels, illustrating the robustness induced by geometric median aggregation and median-based switching.}
+\end{figure}
+
+\paragraph{Interpretation.}
+The clean SGM trajectory (left) follows a characteristic switching pattern: gradients of the constraint push the iterates onto the feasible region, and gradients of the objective pull them toward the minimizer.  
+Under corruption (middle), the mean gradient estimator becomes unreliable. Because SGM uses a hard switch, a single corrupted mini-batch can force the iterate far from the feasible boundary; subsequent iterations cannot correct this deviation, resulting in erratic, divergent trajectories.  
+
+In contrast, GM-SGM (right) aggregates gradients using the geometric median, which neutralizes the influence of outliers or adversarial vectors. This produces smooth and consistent descent directions even when 40\% of gradients are corrupted, preserving both feasibility and convergence.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{results/sgm_gmsgm_gross_comparison_2d.png}
+\caption{\textbf{2D trajectory comparison.}  
+SGM under corruption exhibits chaotic behavior characteristic of mean-aggregated updates in adversarial regimes, while GM-SGM produces a stable and direct trajectory toward the minimizer.}
+\end{figure}
+s
+
+\paragraph{Why this happens.}
+In the 2D projection, the failure mode of SGM becomes more apparent: corrupted gradients introduce large, inconsistent steps that repeatedly push the iterates away from the feasible region. Because switching is triggered by the (corrupted) constraint value, the algorithm oscillates between regimes with no alignment to the true gradient flow.
+
+GM-SGM avoids this pathology for two reasons:
+\begin{enumerate}
+    \item \textbf{Geometric median aggregation} suppresses extreme adversarial perturbations, producing a direction close to the majority of clean gradients.
+    \item \textbf{Median-based feasibility estimation} prevents a few corrupted constraint evaluations from triggering erroneous switches between objective and constraint regimes.
+\end{enumerate}
+Together, these mechanisms ensure that switching dynamics mimic the clean SGM behavior even under substantial corruption, resulting in stable convergence to the optimal point.
+
+% =====================================================================
+\section{Experimental Setup: Non-convex Multi-class Neyman--Pearson Classification}
+% =====================================================================
+
+This section evaluates GM-SGM in a non-convex, multi-class classification setting constructed to follow the structure of the multi-class Neyman--Pearson (mNPC) framework. The mNPC formulation prescribes minimizing the loss of a distinguished \emph{target class} while enforcing explicit upper bounds on the losses of all other classes. Formally, given class-conditional datasets $\{D_i\}_{i=1}^N$ and classifier scores $\{f_i(x;\xi)\}$, the mNPC problem takes the form
+\begin{equation}
+\min_{\|\xi\|\le \theta} 
+\frac{1}{|D_1|} \sum_{x\in D_1} \sum_{j\ne 1} 
+\phi\big(f_1(x;\xi) - f_j(x;\xi)\big),
+\qquad
+\text{s.t.}\quad
+\frac{1}{|D_i|}\sum_{x\in D_i}\sum_{j\ne i} 
+\phi\big(f_i(x;\xi)-f_j(x;\xi)\big) \le \kappa_i,\quad i=2,\dots,N.
+\label{eq:mnpc}
+\end{equation}
+
+This constrained structure is directly aligned with the switching viewpoint of SGM:  
+each non-target class defines a constraint, and the optimizer must dynamically alternate between decreasing the target loss and correcting constraint violations.
+
+% ---------------------------------------------------------------------
+\subsection{Relation to SGM and Motivation}
+% ---------------------------------------------------------------------
+
+The correspondence between SGM and mNPC is shown in Table~\ref{tab:sgm_mnpc}. In both settings, the core challenge lies in maintaining feasibility while optimizing a primary objective. Classical SGM achieves this by switching between $\nabla f$ and $\nabla g$ depending on feasibility. In the mNPC case, each class-wise constraint implicitly defines a gradient direction guiding iterates back toward the feasible region. However, in stochastic or adversarial settings, mean-based gradient estimates are highly unstable: a small fraction of corrupted batches can trigger persistent constraint violations.
+
+Since mNPC constraints are computed from per-class losses, their gradients are especially susceptible to outliers. GM-SGM is therefore a natural candidate for this regime: geometric-median gradient aggregation should stabilize both objective and constraint components of the update rule, preserving feasibility even under significant gradient corruption.
+
+\begin{table}[H]
+\centering
+\caption{Conceptual analogy between SGM and the multi-class Neyman--Pearson formulation.}
+\vspace{0.15cm}
+\label{tab:sgm_mnpc}
+\begin{tabular}{lll}
+\toprule
+Concept & SGM & mNPC \\
+\midrule
+Objective term & $f(w)$ & Target-class loss \\
+Constraint term & $g(w)\le \epsilon$ & Per-class loss $\le \kappa_i$ \\
+Switching rule & $\nabla f$ vs.\ $\nabla g$ & Target vs.\ constraint gradients \\
+Goal & Feasibility maintenance & Class-wise error control \\
+Robustness need & Switching instability under noise & Highly sensitive per-class losses \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------
+\subsection{Neural Training Setup}
+% ---------------------------------------------------------------------
+
+To instantiate the mNPC structure in practice, we train a 3-layer multilayer perceptron (MLP) on \mbox{Fashion-MNIST}. The problem is cast so that:
+\begin{itemize}
+    \item The \emph{Sneaker class} (class 7) serves as the target objective.
+    \item All other classes are constrained with thresholds $\kappa_i = 0.3$.
+    \item Constraint violation is measured via the maximal deviation over all non-target classes.
+    \item The optimization landscape is non-convex due to the neural network architecture.
+\end{itemize}
+
+To emulate adversarial stochastic environments:
+\begin{itemize}
+    \item SGM-corrupt uses \emph{element-wise gradient corruption}, where each gradient coordinate is perturbed with probability $0.3$ by a large-magnitude noise.
+    \item GM-SGM-corrupt simulates $11$ independent ``workers,'' of which $40\%$ produce fully corrupted gradients; the geometric median aggregates their outputs.
+\end{itemize}
+
+This setup stresses both feasibility and robustness in ways that closely reflect mNPC theory: each class imposes a delicate constraint that is easy to violate under noise, yet essential for overall controlled performance.
+
+% ---------------------------------------------------------------------
+\subsection{Results and Analysis}
+% ---------------------------------------------------------------------
+
+\subsubsection{Per-Class Loss Evolution}
+
+Figure~\ref{fig:per_class_mnpc} compares the per-class loss evolution of SGM under corruption and GM-SGM under the same corruption level. Each non-target class is shown as a gray trajectory, while the target class is highlighted in red.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\includegraphics[width=\textwidth]{results/per_class_evolution_SGM-corrupt.png}
+\caption{SGM-corrupt}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\includegraphics[width=\textwidth]{results/per_class_evolution_GM-SGM-corrupt.png}
+\caption{GM-SGM-corrupt}
+\end{subfigure}
+\caption{\textbf{Per-class loss evolution under mNPC constraints.}  
+SGM-corrupt shows persistent constraint violations and high variability across classes.  
+GM-SGM-corrupt stabilizes all non-target classes below the constraint threshold, despite heavy corruption.}
+\label{fig:per_class_mnpc}
+\end{figure}
+
+The contrast is sharp: SGM-corrupt oscillates significantly, repeatedly violating many constraints. GM-SGM maintains all class-wise losses in a tight band around the feasible region, demonstrating the stabilizing effect of geometric-median aggregation.
+
+% % ---------------------------------------------------------------------
+% \subsubsection{Target Loss and Constraint Violation Dynamics}
+% % ---------------------------------------------------------------------
+
+% Figure~\ref{fig:target_penalty} presents the evolution of the target-class loss alongside the penalty term encoding maximal constraint violation.
+
+% \begin{figure}[H]
+% \centering
+% \includegraphics[width=0.8\textwidth]{results/target_vs_penalty_comparison.png}
+% \caption{\textbf{Target-class loss and constraint violation comparison.}  
+% SGM-corrupt attains reasonable target-class performance but fails to regulate constraint violations, leading to unstable training.  
+% GM-SGM-corrupt maintains both low target loss and near-zero penalty throughout training.}
+% \label{fig:target_penalty}
+% \end{figure}
+
+% These results highlight a key difference: SGM-corrupt “chases” the target objective but cannot maintain feasibility, whereas GM-SGM succeeds on both fronts simultaneously.
+
+% ---------------------------------------------------------------------
+\subsubsection{Distributional Behavior at Convergence}
+% ---------------------------------------------------------------------
+
+The final-epoch behavior offers additional insight. Figure~\ref{fig:box_final} shows class-wise loss distributions at the last epoch.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.55\textwidth]{results/last_epoch_boxplot.png}
+\caption{\textbf{Distribution of per-class losses at the last epoch.}  
+SGM-corrupt produces a wide spread of losses with numerous constraint violations, while GM-SGM-corrupt yields compact distributions well below $\kappa_i$.}
+\label{fig:box_final}
+\end{figure}
+
+Finally, Figure~\ref{fig:bar_final} compares the per-class mean losses directly.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{results/last_epoch_bar_comparison.png}
+\caption{\textbf{Final per-class losses.}  
+GM-SGM-corrupt satisfies \emph{every} constraint simultaneously, whereas SGM-corrupt violates almost all of them.}
+\label{fig:bar_final}
+\end{figure}
+
+Collectively, these results confirm that GM-SGM preserves the structural integrity of the mNPC formulation even under heavy corruption: feasibility is maintained, constraint boundaries are respected, and the optimizer avoids the unstable oscillations characteristic of mean-based SGM in adversarial regimes.
+
+
+\section{Conclusion (So far)}
+
+The Geometric Median Switching Gradient Method (GM-SGM) integrates robust geometric median aggregation into the structure of the Switching Gradient Method. Across convex and non-convex constrained experiments, GM-SGM maintains feasibility and stability under severe gradient corruption, outperforming standard SGM. These results indicate that geometric-median switching provides a principled and practical foundation for robust constrained optimization in high-dimensional and adversarial environments.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}  
+
+\bibitem{hashemi2023switching}
+A. Hashemi, S. Chaturapruek, M. Fazel, and M. Mesbahi.  
+\textit{Optimization via First-Order Switching Methods: Skew-Symmetric Dynamics and Optimistic Discretization.}  
+arXiv preprint arXiv:2301.08683, 2023.
+
+\bibitem{pmlr2022bgmd}
+A. Acharya, P. Xu, and T. Yang.  
+\textit{Robust Training in High Dimensions via Block Coordinate Geometric Median Descent.}  
+AISTATS, 2022.
+
+\end{thebibliography}
+
+\end{document}

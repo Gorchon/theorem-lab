@@ -31,8 +31,8 @@ def grad_g():
 
 def gross_corruption(grad, psi=0.4, magnitude=8.0):
     """
-    Apply the Gross Corruption Model (GCM).
-    With probability psi, replace the true gradient with an arbitrary (corrupted) vector.
+    Apply the Gross Corruption Model (GCM).eplace the true gradient with an arbitrary (corrupted) vector.
+    With probability psi, r
     """
     if np.random.rand() < psi:
         # Adversarial replacement: completely overwrite gradient
