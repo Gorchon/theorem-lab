@@ -11,12 +11,24 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \geometry{margin=1in}
+\usepackage{tikz}
+\usetikzlibrary{positioning, calc}
+\usepackage{authblk}
+\usepackage{titling}
 
-\title{\textbf{Geometric Median Switching Gradient Method (GM-SGM):\\
-Robust Optimization under Gradient Corruption}}
-\author{José María Soto Valenzuela\\
-\small Purdue University -- Tecnológico de Monterrey Exchange Program}
-\date{\today}
+
+\title{\Large \bf
+Geometric Median Switching Gradient Method (GM-SGM):\\[3pt]
+Robust Optimization under Gradient Corruption
+}
+
+\author{
+\textbf{José María Soto Valenzuela}\\
+\small Purdue University\\
+\small Tecnológico de Monterrey\\
+}
+
+\date{}
 
 \begin{document}
 \maketitle
@@ -142,7 +154,6 @@ w_{t+1} = w_t - \eta u_t.
 \end{algorithm}
 
 % ------------------------------------------------------------
-% ------------------------------------------------------------
 \section{Controlled Validation on Convex Quadratics}
 
 To isolate the effect of gradient corruption on switching dynamics, we evaluate SGM and GM-SGM on the convex quadratic objective
@@ -190,7 +201,6 @@ In contrast, GM-SGM (right) aggregates gradients using the geometric median, whi
 \caption{\textbf{2D trajectory comparison.}  
 SGM under corruption exhibits chaotic behavior characteristic of mean-aggregated updates in adversarial regimes, while GM-SGM produces a stable and direct trajectory toward the minimizer.}
 \end{figure}
-s
 
 \paragraph{Why this happens.}
 In the 2D projection, the failure mode of SGM becomes more apparent: corrupted gradients introduce large, inconsistent steps that repeatedly push the iterates away from the feasible region. Because switching is triggered by the (corrupted) constraint value, the algorithm oscillates between regimes with no alignment to the true gradient flow.
@@ -294,23 +304,6 @@ GM-SGM-corrupt stabilizes all non-target classes below the constraint threshold,
 
 The contrast is sharp: SGM-corrupt oscillates significantly, repeatedly violating many constraints. GM-SGM maintains all class-wise losses in a tight band around the feasible region, demonstrating the stabilizing effect of geometric-median aggregation.
 
-% % ---------------------------------------------------------------------
-% \subsubsection{Target Loss and Constraint Violation Dynamics}
-% % ---------------------------------------------------------------------
-
-% Figure~\ref{fig:target_penalty} presents the evolution of the target-class loss alongside the penalty term encoding maximal constraint violation.
-
-% \begin{figure}[H]
-% \centering
-% \includegraphics[width=0.8\textwidth]{results/target_vs_penalty_comparison.png}
-% \caption{\textbf{Target-class loss and constraint violation comparison.}  
-% SGM-corrupt attains reasonable target-class performance but fails to regulate constraint violations, leading to unstable training.  
-% GM-SGM-corrupt maintains both low target loss and near-zero penalty throughout training.}
-% \label{fig:target_penalty}
-% \end{figure}
-
-% These results highlight a key difference: SGM-corrupt “chases” the target objective but cannot maintain feasibility, whereas GM-SGM succeeds on both fronts simultaneously.
-
 % ---------------------------------------------------------------------
 \subsubsection{Distributional Behavior at Convergence}
 % ---------------------------------------------------------------------
@@ -337,13 +330,402 @@ GM-SGM-corrupt satisfies \emph{every} constraint simultaneously, whereas SGM-cor
 
 Collectively, these results confirm that GM-SGM preserves the structural integrity of the mNPC formulation even under heavy corruption: feasibility is maintained, constraint boundaries are respected, and the optimizer avoids the unstable oscillations characteristic of mean-based SGM in adversarial regimes.
 
+% =====================================================================
+\section{Block Coordinate Selection and Memory Mechanism}
+% =====================================================================
 
+Geometric-median aggregation is the core component that stabilizes GM-SGM under adversarial or heavy-tailed gradient corruption. However, computing a geometric median in $\mathbb{R}^d$ requires $\mathcal{O}(bd)$ work per iteration, where $b$ is the number of per-sample stochastic gradients used for aggregation. In modern neural models where $d$ can range from $10^6$ to $10^8$, this cost becomes a major computational bottleneck.
+
+Acharya et al.~\cite{pmlr2022bgmd} address this challenge by introducing two complementary mechanisms:
+
+\begin{itemize}
+    \item \textbf{Block coordinate selection}, which restricts geometric-median aggregation to the $k \ll d$ coordinates that carry most of the gradient signal.
+    \item \textbf{A memory mechanism}, which accumulates information discarded by block selection and reinjects it into future iterations.
+\end{itemize}
+
+In this section, we reinterpret these ideas in the context of GM-SGM and show how they enable robust geometric-median switching at scale.
+
+% =====================================================================
+\subsection{Block Coordinate Selection}
+% =====================================================================
+
+Each GM-SGM iteration requires two geometric-median aggregations:
+\[
+\mathrm{GM}(\{\nabla f_i(w_t)\}), \qquad 
+\mathrm{GM}(\{\nabla g_i(w_t)\}),
+\]
+corresponding to the objective and constraint components. While robust, these operations scale linearly with dimension $d$. To deploy GM-SGM in high-dimensional constrained learning, the aggregation step must scale sublinearly.
+
+\paragraph{Motivation.}
+In over-parameterized models, only a small subset of coordinates contains meaningful gradient information: the remaining coordinates behave like noise. BGMD formalizes this using the importance scores
+\[
+s_j = \sum_{i=1}^b G_t[i,j]^2,
+\]
+where $G_t \in \mathbb{R}^{b \times d}$ is the matrix of \emph{per-sample} gradients at iteration $t$.  
+The top-$k$ coordinates with largest $s_j$ define an index set $I_k$, and the projection
+\[
+\mathcal{C}_k(G_t)[i,j] =
+\begin{cases}
+G_t[i,j], & j \in I_k,\\
+0, & j \notin I_k
+\end{cases}
+\]
+restricts gradients to this informative subspace.
+
+\paragraph{Effect on robustness and complexity.}
+Restricting geometric-median aggregation to $k$ coordinates yields:
+\begin{itemize}
+    \item $\mathcal{O}(bd) \to \mathcal{O}(bk)$ aggregation cost,
+    \item preserved breakdown point $1/2$ (GM in $\mathbb{R}^k$ remains robust to $50\%$ corruption),
+    \item removal of low-energy, noise-dominated coordinates,
+    \item contraction of the gradient matrix:
+    \[
+    \E\|\mathcal{C}_k(G_t)-G_t^\star\|^2
+    \le (1-\xi)\|G_t - G_t^\star\|^2,
+    \qquad \xi>0,
+    \]
+    improving gradient concentration in the reduced space.
+\end{itemize}
+
+\paragraph{Relevance to switching.}
+GM-SGM depends critically on the directions of $\widehat{\nabla f}(w_t)$ and $\widehat{\nabla g}(w_t)$.  
+Noise-dominated coordinates can distort these directions and destabilize feasibility restoration.  
+Block selection sharpens the vector fields in the most informative directions, yielding more stable switching behavior.
+
+% =====================================================================
+\subsection{Memory Mechanism}
+% =====================================================================
+
+Block restriction removes all coordinates outside $I_k$, producing a residual
+\[
+\Delta_t = G_t - \mathcal{C}_k(G_t).
+\]
+If ignored, these discarded components introduce systematic bias. In GM-SGM, this is particularly problematic: constraint gradients often have small magnitude, and permanently losing coordinates can distort switching decisions and cause persistent feasibility violations.
+
+\paragraph{Role in GM-SGM.}
+GM-SGM follows a piecewise vector field:
+\[
+u_t =
+\begin{cases}
+\widehat{\nabla f}, & g(w_t)\le\epsilon,\\
+\widehat{\nabla g}, & g(w_t)>\epsilon.
+\end{cases}
+\]
+Long-term stability requires that the aggregated gradients approximate their full-dimensional counterparts.  
+Without a mechanism to reincorporate discarded coordinates, the optimizer may drift away from the true descent direction.
+
+\paragraph{Error-feedback via memory.}
+BGMD resolves this via a cumulative memory vector:
+\[
+m_{t+1} = m_t + \frac{1}{b}\sum_{i=1}^b \Delta_t[i],
+\]
+which is added back in subsequent iterations:
+\[
+G_t^{\mathrm{aug}} = G_t + m_t.
+\]
+
+\paragraph{What memory guarantees.}
+The memory mechanism ensures:
+\begin{itemize}
+    \item discarded coordinates re-enter the update dynamics;
+    \item block-restricted GM approximates the full-dimensional GM direction over time;
+    \item switching behavior remains aligned with clean SGM dynamics;
+    \item feasibility and stability are maintained even when $k \ll d$.
+\end{itemize}
+
+Acharya et al.\ show that this mechanism restores the convergence guarantees of full-dimensional geometric-median descent, even when the block size $k$ is very small.
+
+% =====================================================================
+\subsection{Conceptual Overview}
+% =====================================================================
+
+Figure~\ref{fig:block_memory_diagram} illustrates the interaction between block selection, memory compensation, and geometric-median aggregation. In each iteration, the per-sample gradients are augmented with accumulated memory, restricted to a $k$-dimensional informative block, and aggregated using the geometric median.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1.4cm, every node/.style={font=\footnotesize}, >=stealth]
+
+% ROW 1
+\node (gt)  [draw, rounded corners, thick, minimum width=2.6cm] {$G_t$};
+\node (mem) [draw, rounded corners, thick, right=2.5cm of gt, minimum width=2.6cm] {$m_t$};
+
+% ROW 2
+\node (aug) [draw, rounded corners, thick, below=1.2cm of $(gt)!0.5!(mem)$, minimum width=3.4cm]
+{$G_t^{\mathrm{aug}} = G_t + m_t$};
+
+% ROW 3
+\node (block) [draw, rounded corners, thick, below=1.2cm of aug, minimum width=3.4cm]
+{Block Selection $\mathcal{C}_k$};
+
+% ROW 4
+\node (gm) [draw, rounded corners, thick, below=1.2cm of block, minimum width=3.4cm]
+{Geometric Median on $k$ dimensions};
+
+% ROW 5
+\node (update) [draw, rounded corners, thick, below=1.2cm of gm, minimum width=3.4cm]
+{Update $x_{t+1}$};
+
+% RESIDUAL
+\node (res) [draw, dashed, rounded corners, thick, left=3.2cm of block, minimum width=3cm]
+{Residual $\Delta_t$};
+
+% ARROWS
+\draw[->, thick] (gt) -- (aug);
+\draw[->, thick] (mem) -- (aug);
+\draw[->, thick] (aug) -- (block);
+\draw[->, thick] (block) -- (gm);
+\draw[->, thick] (gm) -- (update);
+
+% RESIDUAL LOOPBACK
+\draw[->, dashed, thick] (block.west) -- (res.east);
+\draw[->, dashed, thick] (res.north east) to[out=45, in=180] (mem.west);
+
+\end{tikzpicture}
+
+\caption{\textbf{Block + Memory geometric-median aggregation.}
+Per-sample gradients are augmented with memory, restricted to the most informative coordinates, aggregated via geometric median, and the discarded residual is fed back into memory.}
+\label{fig:block_memory_diagram}
+\end{figure}
+
+\begin{algorithm}[H]
+\caption{GM-SGM with Block Coordinate Selection and Memory}
+\label{alg:gmsgm_block_memory}
+\begin{algorithmic}[1]
+
+\Require Step size $\eta$, block ratio $\beta$, feasibility threshold $\epsilon$, switching parameter $\gamma$
+\State Initialize $w_0$, memory vector $m_0 = 0$
+
+\For{$t = 0,1,\dots,T-1$}
+
+    % =================== PER-SAMPLE GRADIENTS ===================
+    \State Sample mini-batch $\mathcal{D}_t$
+    \State Form per-sample gradient matrices:
+    \[
+        G_t^f = 
+        \begin{bmatrix}
+            \nabla f_1(w_t)^\top\\[-2pt]
+            \vdots\\[-2pt]
+            \nabla f_b(w_t)^\top
+        \end{bmatrix},
+        \qquad
+        G_t^g =
+        \begin{bmatrix}
+            \nabla g_1(w_t)^\top\\[-2pt]
+            \vdots\\[-2pt]
+            \nabla g_b(w_t)^\top
+        \end{bmatrix}.
+    \]
+
+    % =================== BLOCK SELECTION (RAW ONLY) ===================
+    \State Compute coordinate importance scores (following BGMD block-selection):
+    \[
+        s_j = \sum_{i=1}^b \big(G_t^f[i,j]\big)^2
+    \]
+    \State Select informative coordinates: \; $I_k = \mathrm{TopK}(s_j)$
+
+    \State Project raw gradients:
+    \[
+        \widetilde{G}_t^f = \mathcal{C}_k(G_t^f), \qquad 
+        \widetilde{G}_t^g = \mathcal{C}_k(G_t^g)
+    \]
+
+    % =================== RESIDUAL + MEMORY UPDATE ===================
+    \State Compute residual (discarded coordinates):
+    \[
+        \Delta_t = G_t^f - \widetilde{G}_t^f
+    \]
+    \State Update memory (BGMD-style error feedback):
+    \[
+        m_{t+1} = m_t + \frac{1}{b}\sum_{i=1}^b \Delta_t[i]
+    \]
+
+    % =================== MEMORY-AUGMENTED AGGREGATION ===================
+    \State Form augmented matrices:
+    \[
+        G_t^{f,\mathrm{aug}} = \widetilde{G}_t^f + m_t,
+        \qquad
+        G_t^{g,\mathrm{aug}} = \widetilde{G}_t^g + m_t
+    \]
+
+    % =================== GEOMETRIC MEDIAN AGGREGATION ===================
+    \State Compute robust block-aggregated gradients:
+    \[
+        \widehat{\nabla f}(w_t) = \mathrm{GM}(G_t^{f,\mathrm{aug}}), \qquad
+        \widehat{\nabla g}(w_t) = \mathrm{GM}(G_t^{g,\mathrm{aug}})
+    \]
+
+    % =================== ROBUST FEASIBILITY ===================
+    \State Compute robust feasibility estimate:
+    \[
+        \widehat g_t = \mathrm{median}(g_i(w_t))
+    \]
+
+    % =================== SWITCHING ===================
+    \State Compute switching weight:
+    \[
+        p_t = \min\{1,\, [1 + \gamma(\widehat g_t - \epsilon)]_+\}
+    \]
+
+    \State Compute update direction:
+    \[
+        u_t = p_t \widehat{\nabla g}(w_t)
+             + (1 - p_t)\widehat{\nabla f}(w_t)
+    \]
+
+    % =================== PARAMETER UPDATE ===================
+    \State Update parameters:
+    \[
+        w_{t+1} = w_t - \eta\, u_t
+    \]
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+
+
+
+% ---------------------------------------------------------------------
+\subsection{Empirical Cost Analysis of Geometric Median Aggregation}
+% ---------------------------------------------------------------------
+
+While robustness is a core advantage of geometric-median aggregation, it must also
+remain computationally feasible in high-dimensional optimization. In GM-SGM, the
+aggregation step is repeatedly applied across objective and constraint gradients,
+so understanding its scaling behavior is essential for evaluating overall
+efficiency. We perform a controlled set of experiments isolating the cost of
+geometric median computation itself, independent of any optimization task.
+
+We benchmark three settings:
+
+\begin{enumerate}
+    \item \textbf{Full GM-SGM aggregation} in ambient dimension $d$.
+    \item \textbf{Block GM-SGM} using only $k = \beta d$ coordinates selected by
+          the BGMD importance criterion, with $\beta \in \{1.0, 0.6, 0.3, 0.1\}$.
+    \item \textbf{Scaling with dimension}, where we vary $k$ directly to measure
+          cost as the effective dimension grows.
+\end{enumerate}
+
+All settings compute the geometric median of $b=11$ synthetic worker gradients,
+matching the corruption model used in our neural experiments. Each aggregation is
+repeated for 100 runs to obtain stable averages.
+
+% -----------------------------
+\paragraph{Result 1: Full GM-SGM vs Block GM-SGM.}
+% -----------------------------
+
+Figure~\ref{fig:gm_runtime_bars} compares the runtime of full-dimensional GM and
+its block-restricted variant across different block fractions $\beta$.
+
+Two facts immediately emerge:
+
+\begin{itemize}
+    \item For $\beta = 1.0$, the block method reduces exactly to the full GM
+          computation, and the runtimes match—this validates the correctness of
+          our block implementation.
+    \item For $\beta < 1.0$, runtime decreases monotonically as the effective
+          dimension shrinks. The savings are substantial even for moderate block
+          sizes, confirming the BGMD insight that most gradient coordinates have
+          negligible contribution to the robust direction.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.65\textwidth]{results/plot_gm_runtime_bar.png}
+\caption{\textbf{Runtime of geometric-median aggregation across block sizes.}
+Reducing the aggregation dimension yields consistent and significant speedups.
+The case $\beta=1.0$ matches full GM exactly, as expected.}
+\label{fig:gm_runtime_bars}
+\end{figure}
+
+% -----------------------------
+\paragraph{Result 2 and 3: Runtime vs Block Ratio $\beta$ and vs Dimension $k$.}
+% -----------------------------
+
+To further understand how the geometric median scales, we present two side-by-side
+experiments: (i) fixing the ambient dimension and varying the block fraction
+$\beta$, and (ii) fixing the block mechanism and sweeping the reduced dimension
+$k$ directly.
+
+\begin{figure}[H]
+\centering
+
+% ---------- Left figure ----------
+\begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \vspace{0pt}
+    \includegraphics[width=\linewidth]{results/plot_gm_runtime_vs_beta.png}
+    \caption{\textbf{Runtime vs.\ block fraction $\beta$.}
+    With ambient dimension $d = 500{,}000$ fixed, runtime increases with $\beta$, 
+    but not linearly—diminishing returns appear as $\beta$ becomes small. 
+    The range $\beta \in [0.3, 0.6]$ offers an excellent trade-off between cost 
+    and information retention.}
+    \label{fig:gm_runtime_beta}
+\end{subfigure}
+\hfill
+% ---------- Right figure ----------
+\begin{subfigure}[t]{0.48\textwidth}
+    \centering
+    \vspace{0pt}
+    \includegraphics[width=\linewidth]{results/plot_gm_runtime_vs_dimension.png}
+    \caption{\textbf{Runtime vs.\ reduced dimension $k$.}
+    Directly sweeping $k$ reveals near-linear scaling, consistent with the 
+    $\mathcal{O}(bk)$ complexity of Weiszfeld’s algorithm. 
+    Even moderate reductions in $k$ yield large computational savings.}
+    \label{fig:gm_runtime_dim}
+\end{subfigure}
+
+\caption{\textbf{Geometric median runtime scaling under block reduction.}  
+Both experiments show that geometric-median aggregation scales roughly linearly 
+with the number of coordinates. Block coordinate selection reduces this dimension 
+from $d$ to $\beta d$, providing substantial speedups while preserving 
+robustness guarantees.}
+\label{fig:gm_runtime_pair}
+\end{figure}
+
+% -----------------------------
+\paragraph{Interpretation.}
+% -----------------------------
+
+Together, these results illustrate a key principle of high-dimensional robust optimization:
+
+\begin{quote}
+\emph{Geometric median aggregation is robust but computationally expensive;  
+block coordinate selection recovers scalability by restricting the median to
+the most informative coordinates while retaining its robustness properties.}
+\end{quote}
+
+In the context of GM-SGM:
+
+\begin{itemize}
+    \item Full GM-SGM provides the strongest robustness guarantees but carries a
+          high per-iteration aggregation cost.
+    \item Block GM-SGM reduces this cost by a factor proportional to $\beta$,
+          without degrading stability.
+    \item The memory mechanism compensates for information discarded by block
+          reduction, ensuring long-term coherence with the full geometric-median
+          direction.
+\end{itemize}
+
+This computational analysis complements our earlier optimization experiments:
+it shows not only that GM-SGM is robust, but also that its block+memory variants
+provide a principled and scalable route for deploying GM-SGM in large neural
+models.
+
+% ---------------------------------------------------------------------
+\subsection{Relevance to GM-SGM}
+% ---------------------------------------------------------------------
+
+These techniques naturally complement the GM-SGM framework. GM-SGM relies on geometric-median aggregation for both objective and constraint gradients. Integrating block coordinate selection would dramatically reduce computational overhead, making GM-SGM scalable to deep networks and large-batch training. The memory mechanism would enable the use of extremely small blocks without losing robustness or feasibility control, preserving GM-SGM’s stability under heavy corruption.
+
+In future work, combining GM-SGM with BGMD-inspired mechanisms offers a principled route toward efficient, robust constrained optimization in high-dimensional and adversarial settings.
+
+% =====================================================================
 \section{Conclusion (So far)}
 
 The Geometric Median Switching Gradient Method (GM-SGM) integrates robust geometric median aggregation into the structure of the Switching Gradient Method. Across convex and non-convex constrained experiments, GM-SGM maintains feasibility and stability under severe gradient corruption, outperforming standard SGM. These results indicate that geometric-median switching provides a principled and practical foundation for robust constrained optimization in high-dimensional and adversarial environments.
 
 \bibliographystyle{plain}
-\begin{thebibliography}{9}  
+\begin{thebibliography}{9}
 
 \bibitem{hashemi2023switching}
 A. Hashemi, S. Chaturapruek, M. Fazel, and M. Mesbahi.  

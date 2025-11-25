@@ -1,33 +1,29 @@
 import os
-import time
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 
-os.makedirs("results", exist_ok=True)
-
 # ============================================================
 # 1. Config general
 # ============================================================
+os.makedirs("results", exist_ok=True)
+
 BATCH_SIZE = 256
-EPOCHS = 100           # puedes aumentar si quieres
+EPOCHS = 200          # you can increase later if needed
 LR = 1e-3
 LAMBDA_PENALTY = 4.0
 KAPPA = 0.3
-TARGET_CLASS = 7
+TARGET_CLASS = 7     # Sneaker
 
-# corrupción
-GRAD_CORR_ELEM_PROB = 0.3
-GRAD_CORR_SCALE = 10.0
+# corruption settings
+GRAD_CORR_ELEM_PROB = 0.3      # prob of corrupting each grad element (for sgm_corrupt)
+GRAD_CORR_SCALE = 10.0         # magnitude of corruption
 
-N_WORKERS = 11
-WORKER_CORR_FRAC = 0.4
-WORKER_CORR_SCALE = 10.0
-
-BETAS = [1.0, 0.6, 0.3]    # fracciones de bloque (k = β d)
+N_WORKERS = 11                 # number of "workers" for GM-SGM
+WORKER_CORR_FRAC = 0.4         # fraction of workers corrupted in GM-SGM
+WORKER_CORR_SCALE = 10.0       # magnitude of worker corruption
 
 # ============================================================
 # 2. Data
@@ -44,25 +40,27 @@ classes = [
     "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"
 ]
 
-# Si quieres timings más “honestos” tipo paper, fuerza CPU:
-# device = torch.device("cpu")
-device = torch.device("cpu")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # ============================================================
-# 3. Helpers: model + gradient ops
+# 3. Helpers: model, grads, geometric median
 # ============================================================
-
 def make_model():
+    """Small 3-layer MLP classifier."""
     model = nn.Sequential(
         nn.Flatten(),
-        nn.Linear(28 * 28, 256), nn.ReLU(),
-        nn.Linear(256, 128), nn.ReLU(),
+        nn.Linear(28 * 28, 256),
+        nn.ReLU(),
+        nn.Linear(256, 128),
+        nn.ReLU(),
         nn.Linear(128, 10),
     )
     return model.to(device)
 
+
 def flatten_grads(params):
+    """Flatten all parameter gradients into a single 1D tensor."""
     grads = []
     for p in params:
         if p.grad is None:
@@ -71,7 +69,9 @@ def flatten_grads(params):
             grads.append(p.grad.view(-1))
     return torch.cat(grads)
 
+
 def set_grads_from_flat(params, flat):
+    """Set parameter gradients from a flattened gradient tensor."""
     offset = 0
     for p in params:
         numel = p.numel()
@@ -82,17 +82,19 @@ def set_grads_from_flat(params, flat):
             p.grad.copy_(grad_slice)
         offset += numel
 
-# ===========================
-# 3A. Geometric median (GM)
-# ===========================
 
 def geometric_median(points, max_iter=10, eps=1e-5):
+    """
+    Compute geometric median of a list of 1D tensors using Weiszfeld's algorithm.
+    All tensors must have same shape.
+    """
+    # stack -> (n_points, dim)
     stack = torch.stack(points, dim=0)
     median = stack.mean(dim=0)
 
     for _ in range(max_iter):
         diffs = stack - median
-        distances = torch.norm(diffs, dim=1) + 1e-8
+        distances = torch.norm(diffs, dim=1) + 1e-8  # avoid div by zero
         weights = 1.0 / distances
         weights = weights / weights.sum()
         new_median = (weights.unsqueeze(1) * stack).sum(dim=0)
@@ -100,15 +102,14 @@ def geometric_median(points, max_iter=10, eps=1e-5):
         if torch.norm(new_median - median) < eps:
             break
         median = new_median
+
     return median
 
-# ============================================================
-# 4. Corruption Models
-# ============================================================
 
 def apply_gross_corruption_to_grads(params, p_elem=0.3, scale=10.0):
     """
-    SGM corruption: each grad element corrupted independently.
+    Grossly corrupt gradient entries for standard SGM baseline.
+    Each element has prob p_elem of receiving a big noisy perturbation.
     """
     for p in params:
         if p.grad is None:
@@ -117,130 +118,49 @@ def apply_gross_corruption_to_grads(params, p_elem=0.3, scale=10.0):
         noise = scale * torch.randn_like(p.grad)
         p.grad.add_(mask * noise)
 
+
 def apply_gm_sgm_aggregation(params, n_workers=11,
                              worker_corr_frac=0.4, scale=10.0):
     """
-    GM-SGM: some workers fully corrupted, GM aggregation over workers
-    in full dimension d.
+    Simulate n_workers stochastic gradients, corrupt a fraction of them, and
+    aggregate using geometric median. This replaces the standard grad.
     """
     base_grad = flatten_grads(params)
+
     grads = []
-    for _ in range(n_workers):
+    for k in range(n_workers):
         gk = base_grad.clone()
+        # corrupt some workers completely (gross corruption)
         if torch.rand(()) < worker_corr_frac:
             gk = scale * torch.randn_like(gk)
         grads.append(gk)
+
     gm_grad = geometric_median(grads)
     set_grads_from_flat(params, gm_grad)
 
-# ============================================================
-# 5. BLOCK COORDINATE + MEMORY (BGMD-style, CORREGIDO)
-# ============================================================
-
-def block_select(G, beta):
-    """
-    BGMD's C_k operator:
-        G ∈ R^{b × d}
-        s_j = ||G[:,j]||^2
-        keep top-k coordinates
-    Returns:
-        G_block (b, d) with zeros outside block
-        mask (d,) boolean indicating selected coords
-    """
-    b, d = G.shape
-    k = max(1, int(beta * d))
-    scores = (G * G).sum(dim=0)          # (d,)
-    _, idx = torch.topk(scores, k)
-    mask = torch.zeros(d, dtype=torch.bool, device=G.device)
-    mask[idx] = True
-    G_out = G.clone()
-    G_out[:, ~mask] = 0
-    return G_out, mask
-
-def apply_gm_sgm_block_memory(params, memory, beta,
-                              n_workers=11, worker_corr_frac=0.4, scale=10.0):
-    """
-    Full BGMD-style GM-SGM + Block + Memory aggregation step.
-
-    Corrección importante:
-      - GM se computa en dimensión reducida k = β d (no en d).
-      - Luego se re-expande a un gradiente de dimensión d,
-        poniendo cero fuera del bloque.
-    """
-    # Gradiente base (d,)
-    base_grad = flatten_grads(params)          # (d,)
-    d = base_grad.numel()
-
-    # Construimos gradientes de "workers"
-    grads = []
-    for _ in range(n_workers):
-        gk = base_grad.clone()
-        if torch.rand(()) < worker_corr_frac:
-            gk = scale * torch.randn_like(gk)
-        grads.append(gk)
-
-    # G ∈ R^{b × d}
-    G = torch.stack(grads)                     # (b, d)
-
-    # Añadir memoria a cada worker (broadcast)
-    # memory ∈ R^d
-    G_tilde = G + memory                       # (b, d)
-
-    # Selección de bloque: C_k(G_tilde)
-    Delta, mask = block_select(G_tilde, beta=beta)  # Delta: (b, d), mask: (d,)
-
-    # Reducir realmente a dimensión k: nos quedamos solo con coordenadas seleccionadas
-    Delta_reduced = Delta[:, mask]            # (b, k)
-
-    # Residuales para memoria en dimensión completa (d)
-    residuals = G_tilde - Delta               # (b, d)
-    new_memory = residuals.mean(dim=0)        # (d,)
-
-    # GM en dimensión reducida (k)
-    gm_grad_reduced = geometric_median(
-        [Delta_reduced[i] for i in range(Delta_reduced.shape[0])]
-    )                                         # (k,)
-
-    # Re-expandimos a dimensión completa (d)
-    gm_full = torch.zeros(d, device=base_grad.device)
-    gm_full[mask] = gm_grad_reduced           # (d,)
-
-    # Guardamos el gradiente como si fuera el "grad" de los params
-    set_grads_from_flat(params, gm_full)
-
-    return new_memory
 
 # ============================================================
-# 6. Training loop with multiple MODES
+# 4. Training loop (SGM / SGM+corruption / GM-SGM)
 # ============================================================
+def train(mode="sgm_clean"):
+    """
+    mode:
+      - 'sgm_clean'      : no corruption
+      - 'sgm_corrupt'    : SGM with gross gradient corruption
+      - 'gmsgm_corrupt'  : GM-SGM with gross corruption
+    """
+    assert mode in ["sgm_clean", "sgm_corrupt", "gmsgm_corrupt"]
 
-def train(mode="sgm_corrupt", beta=None):
-    """
-    Valid modes:
-        "sgm_corrupt"
-        "gmsgm_corrupt"
-        "blockmem_beta"
-    """
     model = make_model()
     criterion = nn.CrossEntropyLoss(reduction="none")
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
-    loss_hist = []       # target class
+    loss_target_hist = []
     penalty_hist = []
     per_class_hist = []
 
-    # memory for block+mem mode
-    memory = None
-    if mode == "blockmem_beta":
-        memory = torch.zeros(
-            sum(p.numel() for p in model.parameters()),
-            device=device
-        )
-
-    start = time.time()
-
     for epoch in range(EPOCHS):
-        per_class_epoch = torch.zeros(10, device=device)
+        per_class_loss_epoch = torch.zeros(10, device=device)
         total_batches = 0
 
         for imgs, labels in train_loader:
@@ -250,28 +170,35 @@ def train(mode="sgm_corrupt", beta=None):
             logits = model(imgs)
             losses = criterion(logits, labels)
 
-            cls_losses = []
+            # Per-class loss on this batch
+            per_class_loss = []
             for c in range(10):
                 mask = (labels == c)
-                cls_losses.append(
-                    losses[mask].mean() if mask.any()
-                    else torch.tensor(0.0, device=device)
-                )
-            cls_losses = torch.stack(cls_losses)
+                if mask.any():
+                    per_class_loss.append(losses[mask].mean())
+                else:
+                    per_class_loss.append(torch.tensor(0.0, device=device))
+            per_class_loss = torch.stack(per_class_loss)
 
-            obj = cls_losses[TARGET_CLASS]
+            # Objective: target class (Sneaker)
+            obj = per_class_loss[TARGET_CLASS]
 
-            eps_tensor = torch.tensor([KAPPA] * 10, device=device)
-            violations = cls_losses - eps_tensor
-            violations[TARGET_CLASS] = 0.0
+            # Constraints via max violation
+            eps_tensor = torch.tensor(
+                [KAPPA for _ in range(10)], device=device
+            )
+            violations = per_class_loss - eps_tensor
+            violations[TARGET_CLASS] = 0.0  # target unconstrained
 
-            g = torch.max(violations)
-            penalty = torch.relu(g)
+            g_value = torch.max(violations)
+            penalty = torch.relu(g_value)
+
             total_loss = obj + LAMBDA_PENALTY * penalty
 
+            # Backward
             total_loss.backward()
 
-            # gradient manipulation depending on mode
+            # Different gradient handling depending on mode
             if mode == "sgm_corrupt":
                 apply_gross_corruption_to_grads(
                     model.parameters(),
@@ -285,94 +212,70 @@ def train(mode="sgm_corrupt", beta=None):
                     worker_corr_frac=WORKER_CORR_FRAC,
                     scale=WORKER_CORR_SCALE,
                 )
-            elif mode == "blockmem_beta":
-                memory = apply_gm_sgm_block_memory(
-                    model.parameters(),
-                    memory,
-                    beta=beta,
-                    n_workers=N_WORKERS,
-                    worker_corr_frac=WORKER_CORR_FRAC,
-                    scale=WORKER_CORR_SCALE,
-                )
-
             optimizer.step()
 
-            per_class_epoch += cls_losses.detach()
+            per_class_loss_epoch += per_class_loss.detach()
             total_batches += 1
 
-        per_class_epoch /= total_batches
-        per_class_hist.append(per_class_epoch.cpu())
-        loss_hist.append(float(per_class_epoch[TARGET_CLASS]))
+        # epoch averages
+        per_class_loss_epoch /= total_batches
+        per_class_hist.append(per_class_loss_epoch.cpu())
+        loss_target_hist.append(
+            float(per_class_loss_epoch[TARGET_CLASS].item())
+        )
         penalty_hist.append(float(penalty.item()))
 
         print(
             f"[{mode}] Epoch {epoch+1}/{EPOCHS} | "
-            f"Loss={loss_hist[-1]:.3f} | Penalty={penalty_hist[-1]:.3f}"
+            f"Target(Sneaker) Loss={loss_target_hist[-1]:.3f} | "
+            f"Penalty={penalty_hist[-1]:.3f}"
         )
 
-    elapsed = time.time() - start
-
+    per_class_hist = torch.stack(per_class_hist)
     return {
-        "loss": loss_hist,
-        "penalty": penalty_hist,
-        "per_class": torch.stack(per_class_hist),
-        "time": elapsed,
+        "model": model,
+        "loss_target_hist": loss_target_hist,
+        "penalty_hist": penalty_hist,
+        "per_class_hist": per_class_hist,
     }
 
-# ============================================================
-# 7. Run experiments
-# ============================================================
-
-print("\n=== Running SGM (corrupt) ===")
-sgm_logs = train("sgm_corrupt")
-
-print("\n=== Running GM-SGM (corrupt) ===")
-gmsgm_logs = train("gmsgm_corrupt")
-
-block_logs = {}
-for beta in BETAS:
-    print(f"\n=== Running GM-SGM + Block + Memory (β={beta}) ===")
-    block_logs[beta] = train("blockmem_beta", beta=beta)
-
-# save everything
-torch.save({
-    "sgm": sgm_logs,
-    "gmsgm": gmsgm_logs,
-    "block": block_logs,
-}, "results/all_methods_logs.pt")
 
 # ============================================================
-# 8. Runtime summary
+# 5. Run experiments
 # ============================================================
+print("\n=== Running SGM with gross corruption ===")
+sgm_corrupt_logs = train(mode="sgm_corrupt")
 
-print("\n=== Runtime Summary ===")
-print(f"SGM-corrupt:       {sgm_logs['time']:.2f}s")
-print(f"GM-SGM-corrupt:    {gmsgm_logs['time']:.2f}s")
-for beta in BETAS:
-    print(f"Block+Mem β={beta}: {block_logs[beta]['time']:.2f}s")
+print("\n=== Running GM-SGM with gross corruption ===")
+gmsgm_logs = train(mode="gmsgm_corrupt")
 
+# Save logs
+torch.save(
+    {
+        "sgm_corrupt": sgm_corrupt_logs,
+        "gmsgm_corrupt": gmsgm_logs,
+    },
+    "results/fashion_mnpc_gm_sgm_logs.pt",
+)
 # ============================================================
-# 9. Plotting utilities (per-method + global)
+# 6. Enhanced Plotting
 # ============================================================
 
 def plot_per_class_evolution(logs, name):
-    """
-    Plot per-class curves with target highlighted.
-    """
-    per_class = logs["per_class"].numpy()
+    """Plot per-class curves with target highlighted (SGM-style visualization)."""
+
+    per_class = logs["per_class_hist"].numpy()
     plt.figure(figsize=(12, 6))
 
+    # plot all non-target classes in gray
     for c in range(10):
         if c == TARGET_CLASS:
             continue
         plt.plot(per_class[:, c], color="gray", alpha=0.4)
 
-    plt.plot(
-        per_class[:, TARGET_CLASS],
-        color="red",
-        linewidth=3,
-        label=f"Target ({classes[TARGET_CLASS]})",
-    )
+    # highlight target class
+    plt.plot(per_class[:, TARGET_CLASS], color="red", linewidth=3,
+             label=f"Target ({classes[TARGET_CLASS]})")
 
     plt.axhline(KAPPA, color="black", linestyle="--", label="κ_i threshold")
 
@@ -384,12 +287,61 @@ def plot_per_class_evolution(logs, name):
     plt.savefig(f"results/per_class_evolution_{name}.png")
     plt.close()
 
+
+def plot_target_vs_others_comparison(logA, logB, labelA, labelB):
+    """Compare target class loss and penalty between two methods."""
+    plt.figure(figsize=(12, 8))
+
+    # Upper subplot: Target class loss
+    plt.subplot(2, 1, 1)
+    plt.plot(logA["loss_target_hist"], label=f"{labelA} – Target Loss")
+    plt.plot(logB["loss_target_hist"], label=f"{labelB} – Target Loss")
+    plt.axhline(KAPPA, linestyle="--", color="red", label="κ_i")
+    plt.ylabel("Loss")
+    plt.title("Target Class Loss Comparison")
+    plt.legend()
+
+    # Lower subplot: Penalty
+    plt.subplot(2, 1, 2)
+    plt.plot(logA["penalty_hist"], label=f"{labelA} – Penalty")
+    plt.plot(logB["penalty_hist"], label=f"{labelB} – Penalty")
+    plt.xlabel("Epoch")
+    plt.ylabel("Penalty")
+    plt.title("Constraint Violation Comparison")
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig("results/target_vs_penalty_comparison.png")
+    plt.close()
+
+
+def plot_classwise_last_epoch(logA, logB, labelA, labelB):
+    """Better per-class comparison at last epoch."""
+
+    A = logA["per_class_hist"][-1].numpy()
+    B = logB["per_class_hist"][-1].numpy()
+
+    x = range(10)
+    plt.figure(figsize=(12, 6))
+
+    plt.bar([i - 0.15 for i in x], A, width=0.3, label=labelA)
+    plt.bar([i + 0.15 for i in x], B, width=0.3, label=labelB)
+
+    plt.axhline(KAPPA, linestyle="--", color="red", label="κ_i")
+
+    plt.xticks(x, classes, rotation=40)
+    plt.ylabel("Loss (Last Epoch)")
+    plt.title("Per-Class Last Epoch Loss Comparison")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("results/last_epoch_bar_comparison.png")
+    plt.close()
+
+
 def plot_deviation_from_kappa(logs, name):
-    """
-    Plot (Loss_i - κ_i) across epochs for all classes.
-    """
-    per_class = logs["per_class"].numpy()
-    deviation = per_class - KAPPA
+    """Plot (Loss_i - kappa) across epochs for all classes."""
+    per_class = logs["per_class_hist"].numpy()
+    deviation = per_class - KAPPA  # If >0 → violating
 
     plt.figure(figsize=(12, 6))
     for c in range(10):
@@ -398,12 +350,8 @@ def plot_deviation_from_kappa(logs, name):
         plt.plot(deviation[:, c], alpha=0.5)
 
     plt.axhline(0, color="black", linestyle="--", label="κ boundary")
-    plt.plot(
-        deviation[:, TARGET_CLASS],
-        color="red",
-        linewidth=3,
-        label=f"Target ({classes[TARGET_CLASS]})",
-    )
+    plt.plot(deviation[:, TARGET_CLASS], color="red", linewidth=3,
+             label=f"Target ({classes[TARGET_CLASS]})")
 
     plt.title(f"Loss – κ Deviation per Class – {name}")
     plt.xlabel("Epoch")
@@ -413,105 +361,50 @@ def plot_deviation_from_kappa(logs, name):
     plt.savefig(f"results/deviation_from_kappa_{name}.png")
     plt.close()
 
-def plot_target_and_penalty_multi(method_logs, labels, filename):
-    """
-    Compare target loss and penalty across multiple methods.
-    """
-    plt.figure(figsize=(12, 8))
 
-    # Target loss
-    plt.subplot(2, 1, 1)
-    for logs, label in zip(method_logs, labels):
-        plt.plot(logs["loss"], label=f"{label} – Target Loss")
-    plt.axhline(KAPPA, linestyle="--", color="red", label="κ_i")
-    plt.ylabel("Loss")
-    plt.title("Target Class Loss Comparison")
-    plt.legend()
+def plot_last_epoch_box(logA, logB, labelA, labelB):
+    """Boxplot of per-class losses at last epoch."""
+    A = logA["per_class_hist"][-1].numpy()
+    B = logB["per_class_hist"][-1].numpy()
 
-    # Penalty
-    plt.subplot(2, 1, 2)
-    for logs, label in zip(method_logs, labels):
-        plt.plot(logs["penalty"], label=f"{label} – Penalty")
-    plt.xlabel("Epoch")
-    plt.ylabel("Penalty")
-    plt.title("Constraint Violation Comparison")
-    plt.legend()
-
-    plt.tight_layout()
-    plt.savefig(f"results/{filename}.png")
-    plt.close()
-
-def plot_last_epoch_box_multi(method_logs, labels, filename):
-    """
-    Boxplot de pérdidas por clase en el último epoch para múltiples métodos.
-    """
-    data = []
-    for logs in method_logs:
-        last = logs["per_class"][-1].numpy()
-        data.append(last)
-
-    plt.figure(figsize=(10, 6))
-    plt.boxplot(data, labels=labels)
+    plt.figure(figsize=(8, 6))
+    plt.boxplot([A, B], labels=[labelA, labelB])
     plt.axhline(KAPPA, linestyle="--", color="red", label="κ")
     plt.ylabel("Last Epoch Class Loss")
     plt.title("Class Loss Distribution at Last Epoch")
-    plt.legend()
     plt.tight_layout()
-    plt.savefig(f"results/{filename}.png")
+    plt.savefig("results/last_epoch_boxplot.png")
     plt.close()
 
-def plot_time_vs_beta(sgm_logs, gmsgm_logs, block_logs, betas):
-    """
-    Plot tiempo vs β para los métodos Block+Memory.
-    Añade líneas horizontales para SGM y GM-SGM.
-    """
-    times_block = [block_logs[b]["time"] for b in betas]
-
-    plt.figure(figsize=(8, 6))
-    plt.plot(betas, times_block, "-o", label="Block+Mem (β)", linewidth=2, markersize=6)
-    plt.axhline(sgm_logs["time"], linestyle="--", color="gray", label="SGM-corrupt time")
-    plt.axhline(gmsgm_logs["time"], linestyle="--", color="green", label="GM-SGM-corrupt time")
-
-    plt.gca().invert_xaxis()  # opcional: β grande a la izquierda, como BGMD
-    plt.xlabel("β (k / d)")
-    plt.ylabel("Runtime (seconds)")
-    plt.title("Runtime vs Block Fraction β (GM-SGM + Block + Memory)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("results/runtime_vs_beta.png")
-    plt.close()
 
 # ============================================================
-# 10. Generate plots for each method + global
+# Generate all enhanced comparison plots
 # ============================================================
 
-print("Generating per-method plots...")
+print("Generating enhanced comparison plots...")
 
-# Diccionario con todos los métodos
-all_logs = {
-    "SGM-corrupt": sgm_logs,
-    "GM-SGM-corrupt": gmsgm_logs,
-}
-for beta in BETAS:
-    all_logs[f"BlockMem-β={beta}"] = block_logs[beta]
+plot_per_class_evolution(sgm_corrupt_logs, "SGM-corrupt")
+plot_per_class_evolution(gmsgm_logs, "GM-SGM-corrupt")
 
-# Plots por método (per-class & deviation)
-for name, logs in all_logs.items():
-    safe_name = name.replace(" ", "_").replace("=", "")
-    plot_per_class_evolution(logs, safe_name)
-    plot_deviation_from_kappa(logs, safe_name)
+plot_target_vs_others_comparison(
+    sgm_corrupt_logs, gmsgm_logs,
+    labelA="SGM-corrupt",
+    labelB="GM-SGM-corrupt"
+)
 
-print("Generating multi-method comparison plots...")
+plot_classwise_last_epoch(
+    sgm_corrupt_logs, gmsgm_logs,
+    labelA="SGM-corrupt",
+    labelB="GM-SGM-corrupt"
+)
 
-# Multi-método: target loss + penalty
-method_logs = [sgm_logs, gmsgm_logs] + [block_logs[b] for b in BETAS]
-labels = ["SGM-corrupt", "GM-SGM-corrupt"] + [f"Block+Mem β={b}" for b in BETAS]
-plot_target_and_penalty_multi(method_logs, labels, "target_penalty_all_methods")
+plot_deviation_from_kappa(sgm_corrupt_logs, "SGM-corrupt")
+plot_deviation_from_kappa(gmsgm_logs, "GM-SGM-corrupt")
 
-# Multi-método: boxplot último epoch
-plot_last_epoch_box_multi(method_logs, labels, "last_epoch_box_all_methods")
+plot_last_epoch_box(
+    sgm_corrupt_logs, gmsgm_logs,
+    labelA="SGM-corrupt",
+    labelB="GM-SGM-corrupt"
+)
 
-# Tiempo vs β
-plot_time_vs_beta(sgm_logs, gmsgm_logs, block_logs, BETAS)
-
-print("All plots saved into ./results/")
+print("All enhanced plots saved into ./results/")
