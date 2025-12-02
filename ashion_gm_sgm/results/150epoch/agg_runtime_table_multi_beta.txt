@@ -1,0 +1,4 @@
+Method,AvgTimePerCall
+GM-SGM-full,0.123144
+GM-SGM-blockmem-0.1,0.028347
+GM-SGM-blockmem-0.3,0.142209

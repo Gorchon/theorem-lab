@@ -28,7 +28,7 @@ WORKER_CORR_FRAC = 0.4
 WORKER_CORR_SCALE = 10.0
 
 # Block + Memory: we will compare several betas
-BETA_BLOCK_LIST = [0.1, 0.3]
+BETA_BLOCK_LIST = [ 0.3]
 
 # Benchmark
 AGG_BENCH_REPEATS = 50
@@ -163,18 +163,16 @@ def gm_agg_block_memory_flat(base_grad,
                              worker_corr_frac=WORKER_CORR_FRAC,
                              scale=WORKER_CORR_SCALE):
     """
-    GM-SGM with Block Coordinate Selection + Memory on the flat gradient base_grad.
+    Optimized GM-SGM with Block Coordinate Selection + Memory on base_grad.
 
-    Implements the GM-SGM+Block+Memory pseudocode (in simplified form):
-      - Build worker gradient matrix G_t in R^{b × d}.
-      - Compute importance scores s_j from G_t (raw, no memory).
-      - Select top-k coordinates (block).
-      - Residual Δ_t = G_t - C_k(G_t), update full-dimensional memory m_t.
-      - Aggregate only in the k-dimensional block using GM(G_t_block + m_t[block]).
-      - Reconstruct a full-dimensional aggregated gradient with zeros outside block.
+    Key differences from the naive version:
+      - No full G_t (b × d) is ever constructed.
+      - Importance scores are computed from base_grad only (O(d)).
+      - Workers are simulated only on the k selected coordinates (O(b·k)).
+      - Memory is updated cheaply from base_grad and the block mask (O(d)).
     """
     d = base_grad.numel()
-    b = n_workers
+    device_ = base_grad.device
 
     # ---- compute block size k ----
     k_dim = max(1, int(beta * d))
@@ -182,42 +180,45 @@ def gm_agg_block_memory_flat(base_grad,
 
     # ---- full-dimensional memory m_t in R^d ----
     if memory is None or memory.numel() != d:
-        memory = torch.zeros(d, device=base_grad.device)
+        memory = torch.zeros(d, device=device_)
 
-    # ---- build G_t (b × d) with worker corruption ----
-    workers = []
-    for _ in range(b):
-        gk = base_grad.clone()
-        if torch.rand(()) < worker_corr_frac:
-            gk = scale * torch.randn_like(gk)
-        workers.append(gk)
-    G_t = torch.stack(workers, dim=0)  # (b, d)
-
-    # ---- importance scores on G_t (raw) ----
-    s = (G_t ** 2).sum(dim=0)  # (d,)
+    # ---- importance scores from base_grad (no G_t) ----
+    # s_j = (base_grad_j)^2
+    s = base_grad.pow(2)  # (d,)
     _, top_idx = torch.topk(s, k_dim)
-    mask = torch.zeros(d, dtype=torch.bool, device=base_grad.device)
+    mask = torch.zeros(d, dtype=torch.bool, device=device_)
     mask[top_idx] = True
 
-    # ---- block projection: G_t_block in R^{b × k} ----
-    G_t_block = G_t[:, mask]  # (b, k_dim)
+    # ---- block view of base_grad and memory ----
+    base_block = base_grad[mask]         # (k_dim,)
+    mem_block = memory[mask]             # (k_dim,)
 
-    # ---- residual and memory update in full dimension ----
-    # C_k(G_t): same as G_t on mask coords, zero elsewhere
-    Delta_t = G_t.clone()
-    Delta_t[:, mask] = 0.0
-    delta_mean = Delta_t.mean(dim=0)          # (d,)
-    memory_new = memory + delta_mean          # full-dimensional m_{t+1}
+    # ---- build worker gradients in k dimensions only ----
+    workers_block = []
+    for _ in range(n_workers):
+        if torch.rand(()) < worker_corr_frac:
+            # fully corrupted worker in block
+            gk_block = scale * torch.randn_like(base_block)
+        else:
+            gk_block = base_block.clone()
+        workers_block.append(gk_block)
+    G_block = torch.stack(workers_block, dim=0)  # (b, k_dim)
 
-    # ---- augmentation with current memory m_t (not m_{t+1}) ----
-    G_t_aug_block = G_t_block + memory[mask].unsqueeze(0)  # (b, k_dim)
+    # ---- augment with current memory m_t (not m_{t+1}) ----
+    G_block_aug = G_block + mem_block.unsqueeze(0)  # (b, k_dim)
 
     # ---- GM in k-dimensional block ----
-    gm_block = geometric_median_stack(G_t_aug_block)  # (k_dim,)
+    gm_block = geometric_median_stack(G_block_aug)  # (k_dim,)
 
     # ---- reconstruct a full-dim gradient ----
-    gm_full = torch.zeros(d, device=base_grad.device)
+    gm_full = torch.zeros(d, device=device_)
     gm_full[mask] = gm_block
+
+    # ---- memory update using residual of base_grad outside block ----
+    # Δ = base_grad - C_k(base_grad), where C_k keeps only block coords
+    Delta = base_grad.clone()
+    Delta[mask] = 0.0      # only non-block coords remain
+    memory_new = memory + Delta
 
     return gm_full, memory_new
 
@@ -357,20 +358,24 @@ def train(mode="sgm_corrupt"):
     }
 
 
-# ============================================================
-# 8. Aggregation runtime benchmark
-# ============================================================
 def benchmark_aggregation_runtime():
     """
     Compare aggregation time between:
-      - GM-SGM full (beta = 1.0 conceptually)
-      - GM-SGM Block + Memory for each beta in BETA_BLOCK_LIST
-    using synthetic gradients with dimension equal to the model's gradient.
+      - GM-SGM full
+      - GM-SGM Block + Memory (for each beta in BETA_BLOCK_LIST)
+    on CPU, with optionally inflated dimension, to make the
+    theoretical O(d) vs O(β d) difference show up more clearly.
     """
+    # Force CPU for benchmarking so GPU launch overhead doesn't dominate.
+    cpu_device = torch.device("cpu")
+
+    # Optionally inflate dimension for the benchmark only
+    DIM_SCALE = 4   # try 4 or 8 if you want it heavier
+
     # dummy model to get gradient dimension d
-    model = make_model()
-    dummy_input = torch.randn(4, 1, 28, 28, device=device)
-    dummy_target = torch.randint(0, 10, (4,), device=device)
+    model = make_model().to(cpu_device)
+    dummy_input = torch.randn(64, 1, 28, 28, device=cpu_device)  # larger batch
+    dummy_target = torch.randint(0, 10, (64,), device=cpu_device)
     criterion = nn.CrossEntropyLoss()
 
     model.zero_grad()
@@ -378,28 +383,40 @@ def benchmark_aggregation_runtime():
     loss = criterion(out, dummy_target)
     loss.backward()
 
-    base_grad = flatten_grads(model.parameters()).detach()
+    base_grad = flatten_grads(model.parameters()).detach().to(cpu_device)
     d = base_grad.numel()
-    print(f"[Benchmark] Gradient dimension d = {d}")
+
+    # inflate dimension by repeating
+    base_grad = base_grad.repeat(DIM_SCALE)
+    d_big = base_grad.numel()
+
+    print(f"[Benchmark] Gradient dimension d (original) = {d}")
+    print(f"[Benchmark] Gradient dimension d (inflated) = {d_big}")
 
     results = {}
 
     # full GM-SGM
     start = time.perf_counter()
     for _ in range(AGG_BENCH_REPEATS):
-        _ = gm_agg_full_flat(base_grad)
+        _ = gm_agg_full_flat(base_grad,
+                             n_workers=N_WORKERS,
+                             worker_corr_frac=WORKER_CORR_FRAC,
+                             scale=WORKER_CORR_SCALE)
     elapsed_full = time.perf_counter() - start
     results["full"] = elapsed_full / AGG_BENCH_REPEATS
 
     # block + memory GM-SGM for each beta
     for beta in BETA_BLOCK_LIST:
-        memory = torch.zeros(d, device=base_grad.device)
+        memory = torch.zeros(d_big, device=cpu_device)
         start = time.perf_counter()
         for _ in range(AGG_BENCH_REPEATS):
             _, memory = gm_agg_block_memory_flat(
                 base_grad,
                 memory,
                 beta=beta,
+                n_workers=N_WORKERS,
+                worker_corr_frac=WORKER_CORR_FRAC,
+                scale=WORKER_CORR_SCALE,
             )
         elapsed_block = time.perf_counter() - start
         results[beta] = elapsed_block / AGG_BENCH_REPEATS
@@ -422,11 +439,10 @@ def benchmark_aggregation_runtime():
     plt.figure(figsize=(7, 5))
     plt.bar(methods, times)
     plt.ylabel("Avg aggregation time (s)")
-    plt.title("Aggregation runtime: full vs block+memory (multi-β)")
+    plt.title("Aggregation runtime on CPU: full vs block+memory (multi-β)")
     plt.tight_layout()
     plt.savefig("results/agg_runtime_bar_multi_beta.png")
     plt.close()
-
 
 # ============================================================
 # 9. Plot helpers for mNPC-style results
@@ -486,47 +502,46 @@ def plot_classwise_last_epoch_multi_beta(full_logs, blockmem_logs_dict):
     One single plot comparing Full GM-SGM vs all Block+Mem betas
     at the last epoch, class-by-class.
     """
-
     A_full = full_logs["per_class_hist"][-1].numpy()   # (10,)
 
-    plt.figure(figsize=(14, 6))
-    x = range(10)
-    width = 0.18
+    betas = sorted(blockmem_logs_dict.keys())
+    m = len(betas)
 
-    # Full baseline
+    plt.figure(figsize=(14, 6))
+    x = list(range(10))
+    width = 0.15
+
+    # Full baseline centered
+    baseline_offset = -width * (m / 2.0)
     plt.bar(
-        [i - width*1.5 for i in x],
+        [i + baseline_offset for i in x],
         A_full,
         width=width,
         label="GM-SGM Full",
-        alpha=0.85
+        alpha=0.85,
     )
 
-    # Each beta
-    colors = ["#ff7f0e", "#2ca02c", "#1f77b4"]
-    for (beta, logs), color in zip(blockmem_logs_dict.items(), colors):
+    # Each beta shifted around the baseline
+    for j, beta in enumerate(betas):
+        logs = blockmem_logs_dict[beta]
         B = logs["per_class_hist"][-1].numpy()
-        shift = {"0.1": -0.5, "0.3": 0, "0.5": 0.5}[str(beta)]
-        shift = float(shift)
-
+        offset = -width * (m / 2.0) + width * (j + 1)
         plt.bar(
-            [i + width * shift for i in x],
+            [i + offset for i in x],
             B,
             width=width,
             label=f"Block+Mem β={beta}",
             alpha=0.85,
-            color=color
         )
 
     plt.axhline(KAPPA, linestyle="--", color="gray", label="κ_i threshold")
     plt.xticks(x, classes, rotation=40)
     plt.ylabel("Loss (Last Epoch)")
-    plt.title("Last Epoch Per-Class Loss — GM-SGM Full vs Block+Mem (β=0.1,0.3,0.5)")
+    plt.title("Last Epoch Per-Class Loss — Full vs Block+Mem (multi-β)")
     plt.legend()
     plt.tight_layout()
     plt.savefig("results/last_epoch_bar_multi_beta.png")
     plt.close()
-
 
 
 def plot_last_epoch_box(logA, logB, labelA, labelB, outfile):
@@ -598,11 +613,12 @@ def plot_multi_beta_curves(full_logs, blockmem_logs_dict):
     plt.savefig("results/multi_beta_penalty.png")
     plt.close()
 
+
 # ============================================================
 # 10. Run experiments
 # ============================================================
 if __name__ == "__main__":
-   
+
     print("\n=== Running GM-SGM (full) with gross corruption ===")
     gmsgm_full_logs = train(mode="gmsgm_full")
 
@@ -623,7 +639,7 @@ if __name__ == "__main__":
         "results/fashion_mnpc_gm_sgm_blockmem_logs.pt",
     )
 
-    # mNPC-style plots: full vs each beta separately
+    # mNPC-style plots: full and each beta
     print("Generating mNPC comparison plots (full vs each β)...")
 
     plot_per_class_evolution(gmsgm_full_logs, "GM-SGM-full")
@@ -641,7 +657,6 @@ if __name__ == "__main__":
             outfile=f"results/target_vs_penalty_full_vs_blockmem_beta{beta}.png",
         )
 
-
         plot_last_epoch_box(
             gmsgm_full_logs,
             logs,
@@ -650,9 +665,7 @@ if __name__ == "__main__":
             outfile=f"results/last_epoch_box_full_vs_blockmem_beta{beta}.png",
         )
 
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    # ONE SINGLE multi-β plot (full vs all betas together)
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # One single multi-β last-epoch class-wise bar plot
     plot_classwise_last_epoch_multi_beta(
         gmsgm_full_logs,
         blockmem_logs
