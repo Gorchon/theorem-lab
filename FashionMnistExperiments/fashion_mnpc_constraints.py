@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 # 1. General config
 # ============================================================
 # ---- Switching mode flag ----
-HARD_SWITCHING = True  # True = hard switching, False = soft switching
+HARD_SWITCHING = False  # True = hard switching, False = soft switching
 
 # ---- Results directory based on mode ----
 RESULTS_DIR = "results_hard_switching" if HARD_SWITCHING else "results_soft_switching"
@@ -45,7 +45,7 @@ CONSTRAINT_CORR_SCALE = 5.0
 
 # modes: "median", "mean", "max", "trimmed", "single", "class_avg"
 # For your current experiment, you can keep "class_avg" (no corruption)
-CONSTRAINT_MODE = "mean"
+CONSTRAINT_MODE = "median"
 
 # ============================================================
 # 2. Data
